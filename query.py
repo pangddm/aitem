@@ -5,4 +5,5 @@ res = requests.post(
     json={"message": "你好,KubeDoctor！我在我的 Kubernetes 集群中遇到了一个问题，Pod 一直处于 CrashLoopBackOff 状态。你能帮我分析一下可能的原因并给出修复建议吗？"}
 )
 
-print(res.json())
+print(res.status_code)
+print(res.text)
