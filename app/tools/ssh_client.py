@@ -1,6 +1,6 @@
 import paramiko
 
-HOST = "192.168.143.135"
+HOST = "192.168.143.13"
 PORT = 22
 USERNAME = "root"
 PASSWORD = "Awcloud!23"
