@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.schemas.chat import ChatRequest
+from app.schemas.request_format import ChatRequest
 from app.services.diagnosis_service import chat_with_agent
 
 router = APIRouter()

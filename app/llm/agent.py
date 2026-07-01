@@ -5,7 +5,7 @@ import json
 from app.tools.tool_registry import execute_tool
 from app.schemas.check import is_safe_command
 from app.schemas.short_memory import SessionMemory
-MAX_ROUNDS = 5  # 防止无限 LLM ↔ tool 循环
+MAX_ROUNDS = 3  # 防止无限 LLM ↔ tool 循环
 
 
 async def run_agent(user_id: str, user_message: str):
