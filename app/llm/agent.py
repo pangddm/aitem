@@ -1,14 +1,18 @@
 from app.llm.client import client
-from app.core.prompts import SYSTEM_PROMPT
-from app.core.tools import TOOLS
+from app.prompt.sys import SYSTEM_PROMPT
+from app.prompt.tools import TOOLS
 import json
 from app.tools.tool_registry import execute_tool
 from app.schemas.check import is_safe_command
-from app.schemas.short_memory import SessionMemory
+from app.memory.short_term import SessionMemory
 MAX_ROUNDS = 3  # 防止无限 LLM ↔ tool 循环
 
 
-async def run_agent(user_id: str, user_message: str):
+async def run_agent(
+    user_id: str,
+    user_message: str,
+    memories=None
+):
 
     memory = SessionMemory()
 
@@ -16,15 +20,54 @@ async def run_agent(user_id: str, user_message: str):
     history = memory.load(user_id)
 
     # 2. 拼接 messages
+    memory_context = ""
+
+    if memories:
+
+        memory_context = "\n\n".join(
+            [
+                f"""
+        Memory:
+        类型: {m.type.value}
+        内容: {m.content}
+        摘要: {m.summary}
+        实体: {m.entities}
+        """
+                    for m in memories
+                ]
+            )
+
+
+    system_prompt = SYSTEM_PROMPT
+
+
+    if memory_context:
+
+        system_prompt += f"""
+
+    以下是历史长期记忆，仅作为辅助信息：
+
+    {memory_context}
+
+
+    使用规则：
+
+    1. 不要盲目信任Memory
+    2. 如果Memory和实时Kubernetes状态冲突，以实时Tool结果为准
+    3. Memory用于提供历史经验和排查方向
+
+    """
+
+
     messages = [
         {
-            "role": "system",
-            "content": SYSTEM_PROMPT
+            "role":"system",
+            "content":system_prompt
         },
         *history,
         {
-            "role": "user",
-            "content": user_message
+            "role":"user",
+            "content":user_message
         }
     ]
 

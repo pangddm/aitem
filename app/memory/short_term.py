@@ -1,12 +1,14 @@
 import redis
+import os
 import json
-
-r = redis.Redis(host="localhost", port=6379, decode_responses=True)
+from dotenv import load_dotenv
+load_dotenv()
+r = redis.Redis(host=os.getenv("REDIS_HOST"), port=int(os.getenv("REDIS_PORT")), decode_responses=True)
 
 class SessionMemory:
-    def __init__(self, max_turns=20, ttl=1800):
-        self.max_turns = max_turns
-        self.ttl = ttl
+    def __init__(self, max_turns=None, ttl=None):
+        self.max_turns = int(os.getenv("REDIS_MAX_TURNS")) if max_turns is None else max_turns
+        self.ttl = int(os.getenv("REDIS_TTL")) if ttl is None else ttl
 
     def key(self, user_id):
         return f"session:{user_id}"
