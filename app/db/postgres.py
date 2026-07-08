@@ -14,8 +14,6 @@ import json
 
 async def init_connection(conn):
 
-    await register_vector(conn)
-
     await conn.set_type_codec(
         'jsonb',
         encoder=json.dumps,

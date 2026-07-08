@@ -1,6 +1,7 @@
 import asyncpg
 from dotenv import load_dotenv
 import os
+from pgvector.asyncpg import register_vector
 load_dotenv()
 
 EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM"))
@@ -16,7 +17,7 @@ async def init_database(
     """
 
     async with pool.acquire() as conn:
-
+        await register_vector(conn)
         # ----------------------------
         # 安装 pgvector
         # ----------------------------
