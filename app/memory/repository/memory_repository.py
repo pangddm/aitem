@@ -490,4 +490,6 @@ class MemoryRepository:
 
             updated_at=row["updated_at"],
 
+            similarity=row.get("similarity"),
+
         )

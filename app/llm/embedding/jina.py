@@ -9,7 +9,7 @@ class JinaEmbedding(EmbeddingModel):
 
     BASE_URL = "https://api.jina.ai/v1/embeddings"
 
-    MODEL = "jina-embeddings-v4"
+    MODEL = "jina-embeddings-v5-text-small"
 
     def __init__(self):
 

@@ -130,65 +130,65 @@ class MemoryMerger:
 
         prompt = f"""
 
-你是一个Memory管理系统。
+                你是一个Memory管理系统。
 
-判断新的候选记忆是否应该合并已有记忆。
-
-
-新记忆:
-
-{json.dumps(
-
-{
-
-"type":candidate.type.value,
-
-"content":candidate.content,
-
-"summary":candidate.summary
-
-},
-
-ensure_ascii=False
-
-)}
+                判断新的候选记忆是否应该合并已有记忆。
 
 
+                新记忆:
 
-已有记忆:
+                {json.dumps(
 
-{json.dumps(
+                {
 
-existing,
+                "type":candidate.type.value,
 
-ensure_ascii=False
+                "content":candidate.content,
 
-)}
+                "summary":candidate.summary
+
+                },
+
+                ensure_ascii=False
+
+                )}
 
 
 
-请返回JSON:
+                已有记忆:
+
+                {json.dumps(
+
+                existing,
+
+                ensure_ascii=False
+
+                )}
 
 
-{{
 
-"action":
-
-"insert | update | ignore",
+                请返回JSON:
 
 
-"target_id":
+                {{
 
-"如果update，需要填写目标memory id，否则为空",
+                "action":
+
+                "insert | update | ignore",
 
 
-"reason":
+                "target_id":
 
-"原因"
+                "如果update，需要填写目标memory id，否则为空",
 
-}}
 
-"""
+                "reason":
+
+                "原因"
+
+                }}
+
+                """
 
 
         response = await client.chat.completions.create(

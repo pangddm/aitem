@@ -80,7 +80,16 @@ class VectorRetriever:
         results = []
 
 
-
+        print(
+            "Retrieved memories:",
+            [
+                (
+                    m.content,
+                    m.similarity
+                )
+                for m in memories
+            ]
+        )
         for memory in memories:
 
 

@@ -80,10 +80,10 @@ async def init_database(
         # Vector Index (HNSW)
         # PostgreSQL 16+/pgvector 推荐
         # ----------------------------
-        # await conn.execute("""
-        #     CREATE INDEX IF NOT EXISTS idx_memory_embedding
-        #     ON memory
-        #     USING hnsw (embedding vector_cosine_ops);
-        # """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_memory_embedding
+            ON memory
+            USING hnsw (embedding vector_cosine_ops);
+        """)
 
     print("Database initialized.")

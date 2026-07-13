@@ -112,3 +112,5 @@ class Memory:
     created_at: datetime
 
     updated_at: datetime
+
+    similarity: float | None = None
