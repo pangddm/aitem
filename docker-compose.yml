@@ -33,3 +33,16 @@ services:
       - "7687:7687"
     volumes:
       - ./data/neo4j:/data
+
+  mysql:
+      image: mysql:8.0
+      container_name: kubedoctor-mysql
+      restart: unless-stopped
+      environment:
+        # 如果需要创建一个默认用户，也可以加上 MYSQL_USER 和 MYSQL_PASSWORD
+        MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+        MYSQL_DATABASE: ${MYSQL_DATABASE}
+      ports:
+        - "3306:3306"
+      volumes:
+        - ./data/mysql:/var/lib/mysql

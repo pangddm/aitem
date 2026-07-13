@@ -6,3 +6,4 @@ __pycache__
 data/postgres/
 data/neo4j/
 data/redis/
+data/mysql/
