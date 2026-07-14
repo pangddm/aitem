@@ -9,7 +9,7 @@ from typing import Literal, Optional
 
 from app.llm.client import client
 
-from app.memory.classes import Memory
+from app.memory.classes import Memory, MemoryType
 
 from app.memory.models.candidate import CandidateMemory
 
@@ -71,6 +71,13 @@ class MemoryMerger:
             )
 
 
+        direct_conflict = self._resolve_conflict(candidate, memories)
+
+        if direct_conflict is not None:
+
+            return direct_conflict
+
+
         result = await self._ask_llm(
 
             candidate,
@@ -88,6 +95,47 @@ class MemoryMerger:
 
         )
 
+
+
+    def _resolve_conflict(
+
+        self,
+
+        candidate: CandidateMemory,
+
+        memories: list[Memory],
+    ) -> MergeResult | None:
+
+        if candidate.type != MemoryType.PREFERENCE:
+
+            for memory in memories:
+
+                if memory.type != candidate.type:
+
+                    continue
+
+                if candidate.importance >= memory.importance:
+
+                    return MergeResult(
+                        action="update",
+                        target=memory,
+                        reason="newer memory has higher importance",
+                    )
+
+            return None
+
+
+        for memory in memories:
+
+            if memory.type == MemoryType.PREFERENCE:
+
+                return MergeResult(
+                    action="update",
+                    target=memory,
+                    reason="preference conflict resolved by newer memory priority",
+                )
+
+        return None
 
 
     async def _ask_llm(

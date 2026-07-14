@@ -4,8 +4,30 @@ from app.prompt.tools import TOOLS
 import json
 from app.tools.tool_registry import execute_tool
 from app.schemas.check import is_safe_command
-from app.memory.short_term import SessionMemory
-MAX_ROUNDS = 3  # 防止无限 LLM ↔ tool 循环
+from app.memory.short_term import SessionMemory, r
+from app.memory.container import memory_container
+from app.memory.short_term_bridge import ShortTermMemoryBridge
+from app.memory.repository.graph_repository import GraphRepository
+from app.db.neo4j import neo4j
+MAX_ROUNDS = 6  # 防止无限 LLM ↔ tool 循环
+
+
+def _extract_entities_from_command(command: str):
+    if not command:
+        return []
+
+    entities = []
+    parts = command.split()
+    for index, part in enumerate(parts):
+        if part in {"pod", "pods", "deployment", "deploy", "namespace", "ns"}:
+            if index + 1 < len(parts):
+                entities.append(f"{part.title()}/{parts[index + 1]}")
+        elif part.startswith("kubectl"):
+            continue
+        elif part.startswith("nginx") or part.startswith("coredns"):
+            entities.append(part)
+
+    return entities
 
 
 async def run_agent(
@@ -27,12 +49,12 @@ async def run_agent(
         memory_context = "\n\n".join(
             [
                 f"""
-        Memory:
-        类型: {m.type.value}
-        内容: {m.content}
-        摘要: {m.summary}
-        实体: {m.entities}
-        """
+                    Memory:
+                    类型: {m.type.value}
+                    内容: {m.content}
+                    摘要: {m.summary}
+                    实体: {m.entities}
+                    """
                     for m in memories
                 ]
             )
@@ -104,6 +126,21 @@ async def run_agent(
             })
 
             memory.save(user_id, history)
+            memory.append_conversation(user_id, "user", user_message)
+            memory.append_conversation(user_id, "assistant", final_answer)
+
+            try:
+                service = memory_container.create_service()
+                bridge = ShortTermMemoryBridge(
+                    redis_client=r,
+                    memory_service=service,
+                )
+                await bridge.process_conversation(
+                    owner=user_id,
+                    conversation_id=user_id,
+                )
+            except Exception as e:
+                print(f"Short-term memory bridge error: {e}")
 
             return final_answer
 
@@ -160,6 +197,19 @@ async def run_agent(
                 "content": str(tool_result)
             })
 
+            try:
+                graph_repo = GraphRepository(driver=neo4j.get_driver())
+                entities = _extract_entities_from_command(command_value)
+                if entities:
+                    await graph_repo.upsert_tool_entities(
+                        owner=user_id,
+                        command=command_value,
+                        tool_result=str(tool_result),
+                        entities=entities,
+                    )
+            except Exception as e:
+                print(f"Tool graph sync error: {e}")
+
     # =========================
     # 超过最大轮次
     # =========================
@@ -180,5 +230,20 @@ async def run_agent(
     })
 
     memory.save(user_id, history)
+    memory.append_conversation(user_id, "user", user_message)
+    memory.append_conversation(user_id, "assistant", final_answer)
+
+    try:
+        service = memory_container.create_service()
+        bridge = ShortTermMemoryBridge(
+            redis_client=r,
+            memory_service=service,
+        )
+        await bridge.process_conversation(
+            owner=user_id,
+            conversation_id=user_id,
+        )
+    except Exception as e:
+        print(f"Short-term memory bridge error: {e}")
 
     return final_answer

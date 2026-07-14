@@ -65,6 +65,8 @@ class ChatWindow(QWidget):
             "background: #111827; border: 1px solid #1f2937; border-radius: 16px; padding: 10px; color: #f8fafc;"
         )
         self.history.setPlaceholderText("开始你的问题吧...")
+        self.history.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+        self.history.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         main_layout.addWidget(self.history, 1)
 
         composer = QHBoxLayout()
@@ -145,6 +147,13 @@ class ChatWindow(QWidget):
         </div>
         """
         self.history.setHtml(html)
+        cursor = self.history.textCursor()
+        cursor.movePosition(cursor.MoveOperation.End)
+        self.history.setTextCursor(cursor)
+        self.history.ensureCursorVisible()
+        scrollbar = self.history.verticalScrollBar()
+        if scrollbar is not None:
+            scrollbar.setValue(scrollbar.maximum())
 
     def _start_loading(self):
         self.loading_dots = 0

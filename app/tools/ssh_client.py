@@ -1,9 +1,11 @@
 import paramiko
-
-HOST = "192.168.143.13"
-PORT = 22
-USERNAME = "root"
-PASSWORD = "Awcloud!23"
+import os
+from dotenv import load_dotenv
+load_dotenv()
+HOST = os.getenv("TARGET_HOST")
+PORT = int(os.getenv("TARGET_PORT"))
+USERNAME = os.getenv("TARGET_USERNAME")
+PASSWORD = os.getenv("TARGET_PASSWORD")
 
 def execute_command(command: str):
 

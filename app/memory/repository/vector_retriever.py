@@ -33,7 +33,7 @@ class VectorRetriever:
 
         self,
 
-        threshold: float = 0.85,
+        threshold: float = 0.45,
 
     ):
 

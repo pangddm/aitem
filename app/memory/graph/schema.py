@@ -18,6 +18,9 @@ class NodeType(str, Enum):
     ENTITY = "Entity"
 
 
+    REASON = "Reason"
+
+
 
     # Kubernetes对象
 
@@ -112,7 +115,11 @@ class RelationType(str, Enum):
 
     EXPOSES = "EXPOSES"
 
+    CHANGED_BY = "CHANGED_BY"
 
+    CHANGED_TO = "CHANGED_TO"
+
+    OPERATED_ON = "OPERATED_ON"
 
     # 故障关系
 
@@ -134,3 +141,9 @@ class RelationType(str, Enum):
 
 
     SIMILAR_TO = "SIMILAR_TO"
+
+
+    REPLACED_BY = "REPLACED_BY"
+
+
+    SUPERSEDED_BY = "SUPERSEDED_BY"

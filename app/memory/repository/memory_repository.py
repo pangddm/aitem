@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from uuid import uuid4
 
+
+import json
 
 from app.db.postgres import postgres
 
@@ -248,12 +250,49 @@ class MemoryRepository:
 
 
 
-    async def delete(
+    async def mark_superseded(
 
         self,
 
         memory_id: str,
 
+        superseded_by: str,
+    ) -> None:
+
+        now = datetime.now()
+
+        async with postgres.pool.acquire() as conn:
+
+            await conn.execute(
+
+                """
+
+                UPDATE memory
+
+                SET
+
+                metadata = jsonb_set(
+                    COALESCE(metadata, '{}'::jsonb),
+                    '{superseded}',
+                    to_jsonb($2::text)
+                ),
+                updated_at = $3
+
+                WHERE id = $1
+
+                """,
+
+                memory_id,
+                superseded_by,
+                now,
+            )
+
+
+    async def delete(
+
+        self,
+
+        memory_id: str,
     ):
 
 
@@ -451,6 +490,42 @@ class MemoryRepository:
         )
 
 
+
+
+    def _apply_forgetting(
+
+        self,
+
+        memory,
+
+        now: datetime,
+    ) -> float:
+
+        if memory.similarity is None:
+
+            return 0.0
+
+        created_at = memory.created_at
+
+        if isinstance(created_at, datetime):
+
+            if created_at.tzinfo is None:
+
+                created_at = created_at.replace(tzinfo=timezone.utc)
+
+            age_days = max(0.0, (now - created_at).total_seconds() / 86400.0)
+
+        else:
+
+            age_days = 0.0
+
+        recency_factor = 1.0 / (1.0 + age_days / 30.0)
+        importance_factor = max(0.2, min(1.0, memory.importance))
+
+        return round(
+            float(memory.similarity) * importance_factor * recency_factor,
+            6,
+        )
 
 
     def _to_memory(

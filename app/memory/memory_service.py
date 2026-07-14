@@ -101,6 +101,8 @@ class MemoryService:
 
             )
 
+            print("MemoryService extracted candidates:", candidates)
+
 
             if not candidates:
 

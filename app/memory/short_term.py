@@ -13,6 +13,9 @@ class SessionMemory:
     def key(self, user_id):
         return f"session:{user_id}"
 
+    def conversation_key(self, user_id):
+        return f"conversation:{user_id}"
+
     def load(self, user_id):
         data = r.get(self.key(user_id))
         if not data:
@@ -29,3 +32,10 @@ class SessionMemory:
         messages.append({"role": role, "content": content})
         self.save(user_id, messages)
         return messages
+
+    def append_conversation(self, user_id, role, content):
+        key = self.conversation_key(user_id)
+        message = {"role": role, "content": content}
+        r.rpush(key, json.dumps(message))
+        r.expire(key, self.ttl)
+        return message

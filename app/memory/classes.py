@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from typing import Dict, List, Optional, Any
 
@@ -78,6 +78,20 @@ class CandidateMemory:
     metadata: Dict[str, Any] = field(
         default_factory=dict
     )
+
+
+@dataclass
+class MemoryStats:
+
+    usage_count: int = 0
+
+    last_recalled_at: Optional[datetime] = None
+
+    last_updated_at: Optional[datetime] = None
+
+    last_feedback: Optional[str] = None
+
+    reinforcement_score: float = 0.0
 
 
 

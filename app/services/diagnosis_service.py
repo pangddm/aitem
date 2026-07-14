@@ -67,55 +67,5 @@ async def chat_with_agent(
     )
 
 
-    # ======================
-    # 3. 保存Memory
-    # ======================
-
-    try:
-
-    #     await memory_service.process(
-
-    #         owner=user_id,
-
-    #         messages=[
-
-    #             {
-    #                 "role":"user",
-    #                 "content":user_message
-    #             },
-
-    #             {
-    #                 "role":"assistant",
-    #                 "content":response
-    #             }
-
-    #         ]
-
-    #     )
-        result = await service.process(
-
-            owner=user_id,
-
-            messages=[
-                {
-                    "role":"user",
-                    "content":user_message
-                },
-                {
-                    "role":"assistant",
-                    "content":response
-                }
-            ]
-
-        )
-
-        print("Memory Process Result:", result)
-
-    except Exception as e:
-
-        print(
-            f"Memory update error: {e}"
-        )
-
-
+    # 长期记忆已在 Agent 侧通过短期记忆桥接自动处理
     return response
