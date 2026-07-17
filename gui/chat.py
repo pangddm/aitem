@@ -1,3 +1,5 @@
+import os
+import threading
 from html import escape
 
 from PyQt6.QtWidgets import (
@@ -8,27 +10,55 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QLabel,
     QHBoxLayout,
+    QFileDialog,
+    QMessageBox,
 )
 from PyQt6.QtCore import Qt, QTimer, QThread, QObject, pyqtSignal
 
-from api import chat
+from api import chat, chat_with_document
 
 
 class ChatWorker(QObject):
     finished = pyqtSignal(object)
     error = pyqtSignal(str)
 
-    def __init__(self, user_id, message):
+    def __init__(self, user_id, message, file_path=None):
         super().__init__()
         self.user_id = user_id
         self.message = message
+        self.file_path = file_path
 
     def run(self):
         try:
-            result = chat(self.user_id, self.message)
+            if self.file_path:
+                result = chat_with_document(self.user_id, self.message, self.file_path)
+            else:
+                result = chat(self.user_id, self.message)
             self.finished.emit(result)
         except Exception as exc:
             self.error.emit(str(exc))
+
+
+class VoiceRecorder:
+    """语音录制与识别"""
+
+    @staticmethod
+    def listen():
+        """录制并识别语音，返回文本"""
+        try:
+            import speech_recognition as sr
+            r = sr.Recognizer()
+            with sr.Microphone() as source:
+                r.adjust_for_ambient_noise(source, duration=0.3)
+                audio = r.listen(source, timeout=5, phrase_time_limit=10)
+            text = r.recognize_google(audio, language="zh-CN")
+            return text
+        except sr.WaitTimeoutError:
+            return None
+        except sr.UnknownValueError:
+            return None
+        except Exception:
+            return None
 
 
 class ChatWindow(QWidget):
@@ -40,6 +70,8 @@ class ChatWindow(QWidget):
         self.resize(1080, 780)
         self.setStyleSheet("background: #0f172a; color: #e2e8f0;")
         self.messages = []
+        self.is_recording = False
+        self.selected_file = None  # 当前待发送的附件路径
         self.init_ui()
 
     def init_ui(self):
@@ -47,6 +79,7 @@ class ChatWindow(QWidget):
         main_layout.setContentsMargins(18, 18, 18, 18)
         main_layout.setSpacing(12)
 
+        # ── Header ──
         header = QHBoxLayout()
         title = QLabel("Kubedoctor")
         title.setStyleSheet("font-size: 22px; font-weight: 700; color: #f8fafc;")
@@ -58,6 +91,7 @@ class ChatWindow(QWidget):
         header.addWidget(self.status_label)
         main_layout.addLayout(header)
 
+        # ── Chat History ──
         self.history = QTextEdit()
         self.history.setReadOnly(True)
         self.history.setAcceptRichText(True)
@@ -69,10 +103,48 @@ class ChatWindow(QWidget):
         self.history.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         main_layout.addWidget(self.history, 1)
 
+        # ── 附件标签 ──
+        self.file_tag_layout = QHBoxLayout()
+        self.file_tag_layout.setContentsMargins(4, 0, 4, 0)
+        self.file_tag_layout.setSpacing(6)
+        self.file_tag_label = QLabel()
+        self.file_tag_label.setVisible(False)
+        self.file_tag_label.setStyleSheet(
+            "background: #1e293b; color: #e2e8f0; border: 1px solid #334155; "
+            "border-radius: 12px; padding: 4px 12px; font-size: 13px;"
+        )
+        self.cancel_file_btn = QPushButton("✕")
+        self.cancel_file_btn.setFixedSize(24, 24)
+        self.cancel_file_btn.setVisible(False)
+        self.cancel_file_btn.setStyleSheet(
+            "background: transparent; color: #94a3b8; border: none; font-size: 14px; font-weight: bold;"
+        )
+        self.cancel_file_btn.clicked.connect(self._cancel_file)
+        self.file_tag_layout.addWidget(self.file_tag_label)
+        self.file_tag_layout.addWidget(self.cancel_file_btn)
+        self.file_tag_layout.addStretch()
+        main_layout.addLayout(self.file_tag_layout)
+
+        # ── Composer ──
         composer = QHBoxLayout()
         composer.setContentsMargins(0, 0, 0, 0)
-        composer.setSpacing(10)
+        composer.setSpacing(8)
 
+        # 附件按钮
+        self.attach_btn = QPushButton("📎")
+        self.attach_btn.setToolTip("添加文档一并提问")
+        self.attach_btn.setFixedSize(42, 42)
+        self.attach_btn.setStyleSheet(self._tool_button_style())
+        self.attach_btn.clicked.connect(self.attach_file)
+
+        # 语音按钮
+        self.voice_btn = QPushButton("🎤")
+        self.voice_btn.setToolTip("语音输入")
+        self.voice_btn.setFixedSize(42, 42)
+        self.voice_btn.setStyleSheet(self._tool_button_style())
+        self.voice_btn.clicked.connect(self.toggle_voice_input)
+
+        # 输入框
         self.input = QLineEdit()
         self.input.setPlaceholderText("请输入问题...")
         self.input.setStyleSheet(
@@ -80,6 +152,7 @@ class ChatWindow(QWidget):
         )
         self.input.returnPressed.connect(self.send)
 
+        # 发送按钮
         self.send_btn = QPushButton("发送")
         self.send_btn.setStyleSheet(
             """
@@ -102,18 +175,130 @@ class ChatWindow(QWidget):
         )
         self.send_btn.clicked.connect(self.send)
 
+        composer.addWidget(self.attach_btn)
+        composer.addWidget(self.voice_btn)
         composer.addWidget(self.input, 1)
         composer.addWidget(self.send_btn)
         main_layout.addLayout(composer)
 
         self.setLayout(main_layout)
 
+    def _tool_button_style(self):
+        return """
+            QPushButton {
+                background: #1f2937;
+                border: 1px solid #374151;
+                border-radius: 21px;
+                font-size: 18px;
+            }
+            QPushButton:hover {
+                background: #374151;
+                border-color: #10a37f;
+            }
+            QPushButton:pressed {
+                background: #111827;
+            }
+        """
+
+    # ───────────────────────────────
+    #  文件选择（选择后暂存，发送时一起提交）
+    # ───────────────────────────────
+    def attach_file(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择文档一并提问",
+            "",
+            "文档 (*.docx *.png *.jpg *.jpeg);;Word文档 (*.docx);;图片 (*.png *.jpg *.jpeg);;所有文件 (*)"
+        )
+        if not file_path:
+            return
+
+        self.selected_file = file_path
+        filename = os.path.basename(file_path)
+        self.file_tag_label.setText(f"📎 {filename}")
+        self.file_tag_label.setVisible(True)
+        self.cancel_file_btn.setVisible(True)
+
+    def _cancel_file(self):
+        self.selected_file = None
+        self.file_tag_label.setVisible(False)
+        self.cancel_file_btn.setVisible(False)
+
+    # ───────────────────────────────
+    #  语音输入
+    # ───────────────────────────────
+    def toggle_voice_input(self):
+        if self.is_recording:
+            return
+        self.is_recording = True
+        self.voice_btn.setStyleSheet(
+            self._tool_button_style().replace("#1f2937", "#dc2626")
+            .replace("#374151", "#dc2626")
+        )
+        self.voice_btn.setText("🔴")
+        self.status_label.setText("🎤 正在录音...")
+        self.voice_btn.setEnabled(False)
+
+        thread = threading.Thread(target=self._record_voice, daemon=True)
+        thread.start()
+
+    def _record_voice(self):
+        text = VoiceRecorder.listen()
+        # 回到主线程更新 UI
+        from PyQt6.QtCore import QMetaObject, Qt, Q_ARG
+        if text:
+            QMetaObject.invokeMethod(
+                self.input, "setText",
+                Qt.ConnectionType.QueuedConnection,
+                Q_ARG(str, text)
+            )
+            QMetaObject.invokeMethod(
+                self, "_on_voice_success",
+                Qt.ConnectionType.QueuedConnection
+            )
+        else:
+            QMetaObject.invokeMethod(
+                self, "_on_voice_fail",
+                Qt.ConnectionType.QueuedConnection
+            )
+
+    def _on_voice_success(self):
+        self._reset_voice_button()
+        self.status_label.setText("🎤 识别完成")
+
+    def _on_voice_fail(self):
+        self._reset_voice_button()
+        self.status_label.setText("🎤 未识别到语音")
+
+    def _reset_voice_button(self):
+        self.is_recording = False
+        self.voice_btn.setText("🎤")
+        self.voice_btn.setStyleSheet(self._tool_button_style())
+        self.voice_btn.setEnabled(True)
+        QTimer.singleShot(2000, lambda: self.status_label.setText("就绪"))
+
+    # ───────────────────────────────
+    #  系统消息
+    # ───────────────────────────────
+    def _add_system_message(self, text):
+        self.messages.append({"role": "system", "text": text})
+        self._render_history()
+
     def _render_history(self):
         html = """
         <div style="font-family:Segoe UI, Arial; font-size:14px; line-height:1.6; padding:6px;">
         """
         for item in self.messages:
-            if item["role"] == "user":
+            if item["role"] == "system":
+                text = escape(item['text']).strip()
+                html += f"""
+                <div style="margin: 6px 0; display:flex; justify-content:center; animation: fadeInUp 0.28s ease;">
+                    <div style="background: #1e293b; color: #94a3b8; border-radius: 12px; padding: 6px 14px; font-size: 13px; max-width: 90%; text-align:center; border: 1px solid #334155;">
+                        {text}
+                    </div>
+                </div>
+                """
+            elif item["role"] == "user":
                 text = escape(item['text']).strip()
                 text = text.replace('\r\n', '\n').replace('\r', '\n')
                 text = text.replace('\n', '<br>')
@@ -178,7 +363,7 @@ class ChatWindow(QWidget):
         self._stream_index = 0
         self._stream_timer = QTimer(self)
         self._stream_timer.timeout.connect(self._stream_next_char)
-        self._stream_timer.start(28)
+        self._stream_timer.start(15)
 
     def _stream_next_char(self):
         if self._stream_index < len(self._stream_text):
@@ -193,10 +378,18 @@ class ChatWindow(QWidget):
 
     def send(self):
         msg = self.input.text().strip()
-        if not msg:
+        if not msg and not self.selected_file:
             return
 
-        self.messages.append({"role": "user", "text": msg})
+        # 显示用户消息（含附件信息）
+        display_msg = msg
+        file_info = ""
+        if self.selected_file:
+            fname = os.path.basename(self.selected_file)
+            file_info = f" [📎 {fname}]"
+            display_msg = f"{msg}\n📎 附件：{fname}" if msg else f"📎 附件：{fname}"
+
+        self.messages.append({"role": "user", "text": display_msg})
         self.messages.append({"role": "assistant", "text": "正在思考..."})
         self._render_history()
         self.input.clear()
@@ -205,7 +398,7 @@ class ChatWindow(QWidget):
         self._start_loading()
 
         self.thread = QThread(self)
-        self.worker = ChatWorker(self.user_id, msg)
+        self.worker = ChatWorker(self.user_id, msg, self.selected_file)
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.run)
         self.worker.finished.connect(self._handle_response)
@@ -214,6 +407,11 @@ class ChatWindow(QWidget):
         self.worker.error.connect(self.thread.quit)
         self.thread.finished.connect(self._cleanup_thread)
         self.thread.start()
+
+        # 清除附件标记
+        self.selected_file = None
+        self.file_tag_label.setVisible(False)
+        self.cancel_file_btn.setVisible(False)
 
     def _handle_response(self, result):
         self._stop_loading()
