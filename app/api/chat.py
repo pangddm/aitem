@@ -1,17 +1,55 @@
 import os
 import traceback
-from fastapi import APIRouter, UploadFile, File, Form
+from uuid import uuid4
+
+from fastapi import APIRouter, BackgroundTasks, UploadFile, File, Form
+
 from app.schemas.request_format import ChatRequest
 from app.services.diagnosis_service import chat_with_agent
 from app.document.parser import parse
 from app.memory.container import memory_container
 from app.memory.classes import MemorySource
+from app.knowledge.factory import knowledge_factory
 
 router = APIRouter()
 print("chat router loaded")
 
 UPLOAD_DIR = "./data/uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+
+async def _ingest_to_knowledge_base(owner: str, file_path: str):
+    """后台任务：将聊天附件导入用户的知识库"""
+    try:
+        # 查找或创建用户的默认知识库
+        kbs = await knowledge_factory.kb_repository.list_by_owner(owner)
+        if kbs:
+            kb_id = kbs[0].id
+        else:
+            from app.knowledge.models import KnowledgeBase
+            from datetime import datetime
+
+            kb_id = str(uuid4())
+            now = datetime.utcnow()
+            kb = KnowledgeBase(
+                id=kb_id,
+                owner=owner,
+                name="聊天文档",
+                description="自动从聊天附件中收集的文档知识",
+                created_at=now,
+                updated_at=now,
+            )
+            await knowledge_factory.kb_repository.create(kb)
+
+        await knowledge_factory.service.upload_document(
+            kb_id=kb_id,
+            file_path=file_path,
+            owner=owner,
+        )
+        print(f"[RAG] 聊天附件已入库: {file_path} → kb={kb_id}")
+    except Exception as e:
+        print(f"[RAG] 聊天附件入库失败: {e}")
+        traceback.print_exc()
 
 
 @router.post("/chat")
@@ -21,6 +59,7 @@ async def chat(request: ChatRequest):
 
 @router.post("/chat_with_document")
 async def chat_with_document(
+    background_tasks: BackgroundTasks,
     user_id: str = Form(...),
     message: str = Form(...),
     file: UploadFile = File(...),
@@ -34,7 +73,16 @@ async def chat_with_document(
         f.write(content)
 
     # =====================
-    # 2. 解析文档（图片由千问提取）
+    # 2. 后台异步入库 RAG（不阻塞聊天响应）
+    # =====================
+    background_tasks.add_task(
+        _ingest_to_knowledge_base,
+        owner=user_id,
+        file_path=file_path,
+    )
+
+    # =====================
+    # 3. 解析文档（图片由千问提取）
     # =====================
     try:
         chunks = parse(file_path)
@@ -54,7 +102,7 @@ async def chat_with_document(
         chunks = []
 
     # =====================
-    # 3. 文档中有用信息 → 存入长期记忆
+    # 4. 文档中有用信息 → 存入长期记忆
     #    MemoryExtractor 会用 DeepSeek 自动判断
     #    哪些是值得记的有用信息，不会全量存
     # =====================
@@ -84,7 +132,7 @@ async def chat_with_document(
             traceback.print_exc()
 
     # =====================
-    # 4. 组装完整用户消息
+    # 5. 组装完整用户消息
     # =====================
     if document_content:
         full_message = f"""用户问题：{message}
@@ -102,7 +150,7 @@ async def chat_with_document(
         full_message = message
 
     # =====================
-    # 5. 调用 Agent（DeepSeek）
+    # 6. 调用 Agent（DeepSeek）
     # =====================
     response = await chat_with_agent(
         user_id=user_id,

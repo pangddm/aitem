@@ -10,6 +10,7 @@ from app.llm.embedding.factory import get_embedding
 from app.api.chat import router as chat_router 
 from app.api.auth import router as auth_router
 from app.api.document import router as document_router
+from app.api.knowledge import router as knowledge_router
 
 embedding = get_embedding()
 
@@ -33,5 +34,6 @@ app = FastAPI(
 app.include_router(chat_router)
 app.include_router(auth_router)
 app.include_router(document_router)
+app.include_router(knowledge_router)
 # 💡 如果你以后想让所有接口都带上统一前缀（比如 /api/chat），可以改成这样写：
 # app.include_router(chat_router, prefix="/api")

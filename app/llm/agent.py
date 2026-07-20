@@ -1,6 +1,7 @@
 from app.llm.client import client
 from app.prompt.sys import SYSTEM_PROMPT
 from app.prompt.tools import TOOLS
+from app.knowledge.factory import knowledge_factory
 import json
 from app.tools.tool_registry import execute_tool
 from app.schemas.check import is_safe_command
@@ -43,6 +44,28 @@ async def run_agent(
 
     # 2. 拼接 messages
     memory_context = ""
+    knowledge_context = ""
+
+    try:
+
+        # 查找用户的所有知识库，逐个检索并合并结果
+        kbs = await knowledge_factory.kb_repository.list_by_owner(user_id)
+        if kbs:
+            service = knowledge_factory.service
+            context_parts = []
+            for kb in kbs:
+                ctx = await service.retrieve_context(
+                    kb_id=kb.id,
+                    query=user_message,
+                )
+                if ctx:
+                    context_parts.append(ctx)
+            knowledge_context = "\n".join(context_parts) if context_parts else ""
+        else:
+            knowledge_context = ""
+
+    except Exception as e:
+        print(f"[RAG] 知识库检索失败: {e}")
 
     if memories:
 
@@ -61,6 +84,29 @@ async def run_agent(
 
 
     system_prompt = SYSTEM_PROMPT
+
+    if knowledge_context:
+
+        system_prompt += f"""
+
+    ======================
+    以下是历史知识库案例
+
+    {knowledge_context}
+
+    要求：
+
+    1、仅作为参考
+
+    2、优先相信实时 Tool
+
+    3、如果历史案例适用，可以直接复用解决方案
+
+    4、不要直接复制历史回答，而是结合当前 Tool 输出分析
+
+    ======================
+
+    """
 
 
     if memory_context:

@@ -7,17 +7,18 @@ import asyncpg
 import pymysql
 from dotenv import load_dotenv
 from pgvector.asyncpg import register_vector
-
 from sqlalchemy import Column, Integer, String, create_engine
 from sqlalchemy.orm import declarative_base
+
+from app.db.knowledge_schema import create_knowledge_schema
 
 load_dotenv()
 
 EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM"))
 
-# ----------------------------
+# ==========================================================
 # MySQL
-# ----------------------------
+# ==========================================================
 
 MYSQL_HOST = os.getenv("MYSQL_HOST", "127.0.0.1").strip()
 MYSQL_PORT = os.getenv("MYSQL_PORT", "3306")
@@ -35,11 +36,15 @@ def ensure_database_exists() -> None:
         charset="utf8mb4",
         autocommit=True,
     )
+
     try:
         with conn.cursor() as cursor:
             cursor.execute(
-                f"CREATE DATABASE IF NOT EXISTS `{MYSQL_DATABASE}` "
-                "CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+                f"""
+                CREATE DATABASE IF NOT EXISTS `{MYSQL_DATABASE}`
+                CHARACTER SET utf8mb4
+                COLLATE utf8mb4_unicode_ci
+                """
             )
     finally:
         conn.close()
@@ -48,7 +53,8 @@ def ensure_database_exists() -> None:
 ensure_database_exists()
 
 MYSQL_URL = (
-    f"mysql+pymysql://{quote_plus(MYSQL_USER)}:{quote_plus(MYSQL_PASSWORD)}"
+    f"mysql+pymysql://{quote_plus(MYSQL_USER)}:"
+    f"{quote_plus(MYSQL_PASSWORD)}"
     f"@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DATABASE}"
 )
 
@@ -58,37 +64,58 @@ MysqlBase = declarative_base()
 
 
 class User(MysqlBase):
+
     __tablename__ = "users"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
+    id = Column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+    )
 
-    username = Column(String(50), unique=True, nullable=False)
+    username = Column(
+        String(50),
+        unique=True,
+        nullable=False,
+    )
 
-    password = Column(String(255), nullable=False)
+    password = Column(
+        String(255),
+        nullable=False,
+    )
 
 
 def init_mysql():
-    """
-    初始化 MySQL
-    """
-    MysqlBase.metadata.create_all(mysql_engine)
+
+    MysqlBase.metadata.create_all(
+        mysql_engine
+    )
+
     print("MySQL initialized.")
 
 
-async def init_database(pool: asyncpg.Pool):
-    """
-    初始化 PostgreSQL
-    """
+# ==========================================================
+# PostgreSQL
+# ==========================================================
+
+async def init_database(
+    pool: asyncpg.Pool,
+):
 
     async with pool.acquire() as conn:
 
         await register_vector(conn)
 
-        await conn.execute("""
+        # pgvector
+        await conn.execute(
+            """
             CREATE EXTENSION IF NOT EXISTS vector;
-        """)
+            """
+        )
 
-        await conn.execute(f"""
+        # Memory
+        await conn.execute(
+            f"""
             CREATE TABLE IF NOT EXISTS memory (
 
                 id UUID PRIMARY KEY,
@@ -116,7 +143,8 @@ async def init_database(pool: asyncpg.Pool):
                 updated_at TIMESTAMP NOT NULL
 
             );
-        """)
+            """
+        )
 
         await conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_memory_owner
@@ -138,5 +166,8 @@ async def init_database(pool: asyncpg.Pool):
             ON memory
             USING hnsw (embedding vector_cosine_ops);
         """)
+
+        # RAG Schema
+        await create_knowledge_schema(conn)
 
     print("PostgreSQL initialized.")

@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer, QThread, QObject, pyqtSignal
 
 from api import chat, chat_with_document
+from knowledge.kb_window import KnowledgeWindow
 
 
 class ChatWorker(QObject):
@@ -39,26 +40,50 @@ class ChatWorker(QObject):
             self.error.emit(str(exc))
 
 
-class VoiceRecorder:
-    """语音录制与识别"""
+class VoiceWorker(QObject):
+    """语音录制工作线程（支持停止）"""
+    result_ready = pyqtSignal(object)  # str 或 None
 
-    @staticmethod
-    def listen():
-        """录制并识别语音，返回文本"""
+    def __init__(self):
+        super().__init__()
+        self._stop_event = threading.Event()
+
+    def stop(self):
+        self._stop_event.set()
+
+    def run(self):
         try:
             import speech_recognition as sr
+
             r = sr.Recognizer()
             with sr.Microphone() as source:
-                r.adjust_for_ambient_noise(source, duration=0.3)
-                audio = r.listen(source, timeout=5, phrase_time_limit=10)
+                r.adjust_for_ambient_noise(source, duration=0.5)
+                audio = None
+                # 循环 + 短超时，让停止信号能及时响应
+                while not self._stop_event.is_set():
+                    try:
+                        audio = r.listen(
+                            source,
+                            timeout=0.5,        # 每0.5秒检查一次停止
+                            phrase_time_limit=10 # 检测到说话后最长录10秒
+                        )
+                        break
+                    except sr.WaitTimeoutError:
+                        continue
+
+            if self._stop_event.is_set():
+                self.result_ready.emit(None)
+                return
+
             text = r.recognize_google(audio, language="zh-CN")
-            return text
-        except sr.WaitTimeoutError:
-            return None
+            self.result_ready.emit(text)
+        except sr.RequestError:
+            # Google 语音识别网络不可达
+            self.result_ready.emit("[ERROR] 语音识别服务网络不通，请检查网络")
         except sr.UnknownValueError:
-            return None
-        except Exception:
-            return None
+            self.result_ready.emit(None)
+        except Exception as e:
+            self.result_ready.emit(f"[ERROR] {e}")
 
 
 class ChatWindow(QWidget):
@@ -84,6 +109,28 @@ class ChatWindow(QWidget):
         title = QLabel("Kubedoctor")
         title.setStyleSheet("font-size: 22px; font-weight: 700; color: #f8fafc;")
         header.addWidget(title)
+
+        self.kb_btn = QPushButton("📚 知识库")
+        self.kb_btn.setStyleSheet(
+            """
+            QPushButton {
+                background: #1f2937;
+                color: #e2e8f0;
+                border: 1px solid #374151;
+                border-radius: 10px;
+                padding: 6px 14px;
+                font-size: 13px;
+                font-weight: 600;
+            }
+            QPushButton:hover {
+                background: #374151;
+                border-color: #10b981;
+            }
+            """
+        )
+        self.kb_btn.clicked.connect(self._open_knowledge_base)
+        header.addWidget(self.kb_btn)
+
         header.addStretch()
 
         self.status_label = QLabel("就绪")
@@ -201,6 +248,13 @@ class ChatWindow(QWidget):
         """
 
     # ───────────────────────────────
+    #  知识库管理（打开独立窗口）
+    # ───────────────────────────────
+    def _open_knowledge_base(self):
+        self.kb_window = KnowledgeWindow(owner=self.user_id)
+        self.kb_window.show()
+
+    # ───────────────────────────────
     #  文件选择（选择后暂存，发送时一起提交）
     # ───────────────────────────────
     def attach_file(self):
@@ -225,57 +279,65 @@ class ChatWindow(QWidget):
         self.cancel_file_btn.setVisible(False)
 
     # ───────────────────────────────
-    #  语音输入
+    #  语音输入（支持开始/停止）
     # ───────────────────────────────
     def toggle_voice_input(self):
-        if self.is_recording:
-            return
+        if not self.is_recording:
+            self._start_recording()
+        else:
+            self._stop_recording()
+
+    def _start_recording(self):
         self.is_recording = True
         self.voice_btn.setStyleSheet(
             self._tool_button_style().replace("#1f2937", "#dc2626")
             .replace("#374151", "#dc2626")
         )
-        self.voice_btn.setText("🔴")
-        self.status_label.setText("🎤 正在录音...")
-        self.voice_btn.setEnabled(False)
+        self.voice_btn.setText("⏹")
+        self.voice_btn.setToolTip("停止录音")
+        self.status_label.setText("🎤 录音中，点击 ⏹ 结束...")
 
-        thread = threading.Thread(target=self._record_voice, daemon=True)
-        thread.start()
+        self.voice_worker = VoiceWorker()
+        self.voice_thread = QThread(self)
+        self.voice_worker.moveToThread(self.voice_thread)
+        self.voice_thread.started.connect(self.voice_worker.run)
+        self.voice_worker.result_ready.connect(self._on_voice_result)
+        self.voice_worker.result_ready.connect(self.voice_thread.quit)
+        self.voice_thread.finished.connect(self._cleanup_voice_thread)
+        self.voice_thread.start()
 
-    def _record_voice(self):
-        text = VoiceRecorder.listen()
-        # 回到主线程更新 UI
-        from PyQt6.QtCore import QMetaObject, Qt, Q_ARG
-        if text:
-            QMetaObject.invokeMethod(
-                self.input, "setText",
-                Qt.ConnectionType.QueuedConnection,
-                Q_ARG(str, text)
-            )
-            QMetaObject.invokeMethod(
-                self, "_on_voice_success",
-                Qt.ConnectionType.QueuedConnection
-            )
+    def _stop_recording(self):
+        if hasattr(self, 'voice_worker') and self.voice_worker:
+            self.voice_worker.stop()
+        self.status_label.setText("🎤 正在识别...")
+
+    def _on_voice_result(self, text):
+        if text and text.startswith("[ERROR]"):
+            self.status_label.setText(f"❌ {text[7:]}")
+            self._reset_voice_button(keep_status=True)
+        elif text:
+            self.input.setText(text)
+            self.status_label.setText("🎤 识别完成")
+            self._reset_voice_button()
         else:
-            QMetaObject.invokeMethod(
-                self, "_on_voice_fail",
-                Qt.ConnectionType.QueuedConnection
-            )
+            self.status_label.setText("🎤 未识别到语音")
+            self._reset_voice_button()
 
-    def _on_voice_success(self):
-        self._reset_voice_button()
-        self.status_label.setText("🎤 识别完成")
-
-    def _on_voice_fail(self):
-        self._reset_voice_button()
-        self.status_label.setText("🎤 未识别到语音")
-
-    def _reset_voice_button(self):
+    def _reset_voice_button(self, keep_status=False):
         self.is_recording = False
         self.voice_btn.setText("🎤")
+        self.voice_btn.setToolTip("语音输入")
         self.voice_btn.setStyleSheet(self._tool_button_style())
-        self.voice_btn.setEnabled(True)
-        QTimer.singleShot(2000, lambda: self.status_label.setText("就绪"))
+        if not keep_status:
+            QTimer.singleShot(2000, lambda: self.status_label.setText("就绪"))
+
+    def _cleanup_voice_thread(self):
+        if hasattr(self, "voice_worker"):
+            self.voice_worker.deleteLater()
+            self.voice_worker = None
+        if hasattr(self, "voice_thread"):
+            self.voice_thread.deleteLater()
+            self.voice_thread = None
 
     # ───────────────────────────────
     #  系统消息
