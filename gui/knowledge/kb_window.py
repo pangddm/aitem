@@ -83,7 +83,7 @@ class KnowledgeWindow(QWidget):
         self.stack.setStyleSheet(f"background: {Style.BG_DARK};")
 
         self.kb_list_page = KbListWidget(self.owner)               # 0
-        self.kb_list_page.enter_kb.connect(self._on_enter_kb)      # 信号连接
+        self.kb_list_page.enter_kb.connect(self._on_enter_kb)
         self.choice_page = self._build_choice_page()                # 1
         self.upload_page = UploadWidget("", "", self.owner)        # 2
         self.batch_page = BatchUploadWidget("", "", self.owner)    # 3
@@ -94,6 +94,18 @@ class KnowledgeWindow(QWidget):
 
         self.stack.setCurrentIndex(PAGE_LIST)
         layout.addWidget(self.stack, 1)
+
+        # 事件过滤器：让拖放事件穿透 QStackedWidget 到达批量上传页
+        self.stack.installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        from PyQt6.QtCore import QEvent
+        if obj is self.stack and self.stack.currentIndex() == PAGE_BATCH:
+            t = event.type()
+            if t in (QEvent.Type.DragEnter, QEvent.Type.DragMove, QEvent.Type.Drop):
+                self.batch_page.event(event)
+                return True
+        return super().eventFilter(obj, event)
 
     # ── 选择页 ──────────────────────────────────────────
 

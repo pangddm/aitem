@@ -493,6 +493,39 @@ class IncidentRepository:
         return incidents, total
 
     # ==========================================================
+    # List by Document
+    # ==========================================================
+
+    async def list_by_document(
+        self,
+        document_id: str,
+    ) -> list[Incident]:
+        """获取某个文档下的所有 Incident（用于去重返回）"""
+
+        async with self.pool.acquire() as conn:
+
+            rows = await conn.fetch(
+                """
+                SELECT *
+                FROM incident
+                WHERE document_id=$1
+                ORDER BY created_at DESC
+                """,
+                UUID(document_id),
+            )
+
+            incidents = []
+            for row in rows:
+                commands = await self._load_commands(
+                    conn, str(row["id"])
+                )
+                incidents.append(
+                    self._build_incident(row, commands)
+                )
+
+        return incidents
+
+    # ==========================================================
     # Update
     # ==========================================================
 

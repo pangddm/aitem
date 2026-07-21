@@ -118,36 +118,138 @@ async def upload_document(
     file: UploadFile = File(...),
 ):
     """
-    上传单个文档到知识库
+    上传单个文档到知识库（异步处理）
 
-    流程: 保存文件 → 解析 → 提取 Incident → 向量化 → 存储
+    保存文件后立即返回 document_id，后台处理。
+    前端通过 GET /knowledge/document/{document_id}/status 轮询进度。
     """
+    import asyncio as _asyncio
+
+    document_id = str(uuid4())
     file_path = os.path.join(UPLOAD_DIR, file.filename)
     content = await file.read()
     with open(file_path, "wb") as f:
         f.write(content)
 
+    # 后台异步处理（不阻塞 HTTP 响应）
+    _asyncio.create_task(
+        _process_upload_bg(
+            kb_id=kb_id,
+            owner=owner,
+            file_path=file_path,
+            document_id=document_id,
+        )
+    )
+
+    return {
+        "success": True,
+        "document_id": document_id,
+        "filename": file.filename,
+        "message": "已接收，后台处理中",
+    }
+
+
+async def _process_upload_bg(
+    kb_id: str,
+    owner: str,
+    file_path: str,
+    document_id: str,
+):
+    """后台处理上传的文件"""
+    from app.knowledge.ingestion import progress_tracker, IngestStage
+    from app.knowledge.models import DocumentStatus
+
     try:
-        incidents = await knowledge_factory.service.upload_document(
+        await knowledge_factory.service.upload_document(
             kb_id=kb_id,
             file_path=file_path,
             owner=owner,
+            document_id=document_id,
         )
-        return {
-            "success": True,
-            "file": file.filename,
-            "incidents": len(incidents),
-            "data": incidents,
-        }
     except Exception as e:
         traceback.print_exc()
-        return JSONResponse(
-            status_code=500,
-            content={
-                "success": False,
-                "message": str(e),
-            },
+        progress_tracker.update(
+            document_id,
+            stage=IngestStage.FAILED,
+            message=str(e)[:500],
         )
+        # 同步更新 DB 状态，防止重启后残留 PROCESSING
+        try:
+            await knowledge_factory.document_repository.update_status(
+                document_id,
+                DocumentStatus.FAILED,
+            )
+        except Exception:
+            pass
+
+
+@router.get("/document/{document_id}/status")
+async def get_document_status(document_id: str):
+    """
+    轮询文档处理进度
+
+    返回:
+        stage: loading|cleaning|extracting|embedding|storing|done|failed|duplicate
+        message: 当前阶段描述
+        pct: 进度百分比 0-100
+    """
+    from app.knowledge.ingestion import progress_tracker
+
+    progress = progress_tracker.get(document_id)
+    if progress is not None:
+        return {
+            "success": True,
+            "document_id": progress.document_id,
+            "filename": progress.filename,
+            "stage": progress.stage.value,
+            "message": progress.message,
+            "pct": progress.pct,
+            "incident_count": progress.incident_count,
+            "error": progress.error,
+        }
+
+    # progress_tracker 无记录（后端重启过）→ 查 DB 真实状态
+    doc = await knowledge_factory.document_repository.get(document_id)
+    if doc is None:
+        return JSONResponse(
+            status_code=404,
+            content={"success": False, "message": "文档不存在"},
+        )
+
+    if doc.parse_status.value == "completed":
+        return {
+            "success": True,
+            "document_id": document_id,
+            "filename": doc.filename,
+            "stage": "done",
+            "message": "已完成（历史记录）",
+            "pct": 100,
+            "incident_count": 0,
+            "error": None,
+        }
+    elif doc.parse_status.value == "failed":
+        return {
+            "success": True,
+            "document_id": document_id,
+            "filename": doc.filename,
+            "stage": "failed",
+            "message": "处理失败",
+            "pct": 0,
+            "incident_count": 0,
+            "error": "后台处理异常",
+        }
+    else:
+        # processing / pending → 可能后端崩了重启
+        return {
+            "success": True,
+            "document_id": document_id,
+            "filename": doc.filename,
+            "stage": "processing",
+            "message": "处理中断（后端可能已重启），请重新上传",
+            "pct": 0,
+            "incident_count": 0,
+            "error": None,
+        }
 
 
 @router.post("/kb/{kb_id}/text")

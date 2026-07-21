@@ -8,14 +8,33 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QFrame,
     QDialog,
+    QApplication,
 )
 
-from PyQt6.QtCore import Qt, QSettings
+from PyQt6.QtCore import Qt, QSettings, QThread, pyqtSignal
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import QGraphicsDropShadowEffect
 
 from api import login, register
 from chat import ChatWindow
+
+
+class LoginWorker(QThread):
+    """后台线程执行登录请求，避免阻塞 GUI"""
+    finished = pyqtSignal(dict)
+    error = pyqtSignal(str)
+
+    def __init__(self, username: str, password: str):
+        super().__init__()
+        self._username = username
+        self._password = password
+
+    def run(self):
+        try:
+            result = login(self._username, self._password)
+            self.finished.emit(result)
+        except Exception as e:
+            self.error.emit(str(e))
 
 
 class RegisterDialog(QDialog):
@@ -229,17 +248,42 @@ class LoginWindow(QWidget):
             QMessageBox.warning(self, "提示", "请输入用户名和密码")
             return
 
-        try:
-            result = login(username, password)
-            if result.get("success"):
-                self.save_credentials(username, password)
-                self.chat = ChatWindow(username)
-                self.chat.show()
-                self.close()
-            else:
-                QMessageBox.warning(self, "错误", "用户名或密码错误")
-        except Exception as e:
-            QMessageBox.critical(self, "错误", str(e))
+        # 禁用按钮，防止重复点击
+        self._login_btn = self.sender()
+        if self._login_btn:
+            self._login_btn.setEnabled(False)
+            self._login_btn.setText("登录中...")
+
+        # 后台线程执行网络请求，避免阻塞 GUI
+        self._login_worker = LoginWorker(username, password)
+        self._login_worker.finished.connect(self._on_login_finished)
+        self._login_worker.error.connect(self._on_login_error)
+        self._login_worker.start()
+
+    def _on_login_finished(self, result: dict):
+        self._restore_login_btn()
+        if result.get("success"):
+            self.save_credentials(
+                self.username.text().strip(),
+                self.password.text(),
+            )
+            self.chat = ChatWindow(self.username.text().strip())
+            self.chat.show()
+            self.close()
+        else:
+            QMessageBox.warning(self, "错误", "用户名或密码错误")
+
+    def _on_login_error(self, error_msg: str):
+        self._restore_login_btn()
+        QMessageBox.critical(
+            self, "连接失败",
+            f"无法连接到服务器，请确认后端已启动。\n\n{error_msg}",
+        )
+
+    def _restore_login_btn(self):
+        if hasattr(self, "_login_btn") and self._login_btn:
+            self._login_btn.setEnabled(True)
+            self._login_btn.setText("登录")
 
     def handle_register(self):
         dialog = RegisterDialog(self)

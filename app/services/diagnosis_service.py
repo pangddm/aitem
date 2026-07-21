@@ -56,16 +56,14 @@ async def chat_with_agent(
     # 2. Agent
     # ======================
 
-    response = await run_agent(
-
+    result = await run_agent(
         user_id=user_id,
-
         user_message=user_message,
-
         memories=memories
-
     )
 
-
-    # 长期记忆已在 Agent 侧通过短期记忆桥接自动处理
-    return response
+    # run_agent 返回 {"answer": ..., "reasoning": ..., "tool_calls": [...]}
+    if isinstance(result, dict):
+        return result
+    # 兼容旧版（直接返回字符串）
+    return {"answer": result, "reasoning": "", "tool_calls": []}

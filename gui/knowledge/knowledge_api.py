@@ -66,16 +66,28 @@ def delete_kb(kb_id: str) -> dict:
 
 
 def upload_document(kb_id: str, owner: str, file_path: str) -> dict:
-    """上传单个文档到知识库"""
+    """上传单个文档到知识库（异步，返回 document_id）"""
     filename = os.path.basename(file_path)
     with open(file_path, "rb") as f:
         res = requests.post(
             f"{BASE_URL}/knowledge/kb/{kb_id}/upload",
             files={"file": (filename, f, "application/octet-stream")},
             data={"owner": owner},
-            timeout=300,
+            timeout=30,  # 只等文件传输，不等处理
         )
     return res.json()
+
+
+def get_document_status(document_id: str) -> dict:
+    """轮询文档处理进度"""
+    try:
+        res = requests.get(
+            f"{BASE_URL}/knowledge/document/{document_id}/status",
+            timeout=5,
+        )
+        return res.json()
+    except Exception:
+        return {"success": False, "stage": "", "message": "连接失败"}
 
 
 def upload_text(kb_id: str, owner: str, filename: str, text: str) -> dict:

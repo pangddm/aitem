@@ -82,6 +82,8 @@ async def create_knowledge_schema(
 
             ocr_text TEXT,
 
+            content_hash TEXT,
+
             parse_status TEXT NOT NULL,
 
             metadata JSONB DEFAULT '{}'::jsonb,
@@ -104,6 +106,12 @@ async def create_knowledge_schema(
         ON document(owner);
     """)
 
+    # 兼容已有数据库：添加 content_hash 列
+    await conn.execute("""
+        ALTER TABLE document
+        ADD COLUMN IF NOT EXISTS content_hash TEXT;
+    """)
+
     await conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_document_kb
         ON document(kb_id);
@@ -117,6 +125,16 @@ async def create_knowledge_schema(
     await conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_document_created
         ON document(created_at DESC);
+    """)
+
+    # 去重：同一用户下 content_hash 唯一（跨知识库）
+    await conn.execute("""
+        DROP INDEX IF EXISTS idx_document_kb_hash;
+    """)
+    await conn.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_document_owner_hash
+        ON document(owner, content_hash)
+        WHERE content_hash IS NOT NULL;
     """)
         # ==========================================================
     # Incident

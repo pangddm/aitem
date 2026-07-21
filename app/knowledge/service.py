@@ -24,12 +24,14 @@ class KnowledgeService:
         kb_id: str,
         file_path: str,
         owner: str = "default",
+        document_id: str | None = None,
     ):
 
         return await self.ingestion_service.ingest(
             kb_id=kb_id,
             file_path=file_path,
             owner=owner,
+            document_id=document_id,
         )
 
     # ===========================================

@@ -1,5 +1,4 @@
 import os
-import threading
 from html import escape
 
 from PyQt6.QtWidgets import (
@@ -13,77 +12,12 @@ from PyQt6.QtWidgets import (
     QFileDialog,
     QMessageBox,
 )
-from PyQt6.QtCore import Qt, QTimer, QThread, QObject, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, QThread
 
 from api import chat, chat_with_document
 from knowledge.kb_window import KnowledgeWindow
-
-
-class ChatWorker(QObject):
-    finished = pyqtSignal(object)
-    error = pyqtSignal(str)
-
-    def __init__(self, user_id, message, file_path=None):
-        super().__init__()
-        self.user_id = user_id
-        self.message = message
-        self.file_path = file_path
-
-    def run(self):
-        try:
-            if self.file_path:
-                result = chat_with_document(self.user_id, self.message, self.file_path)
-            else:
-                result = chat(self.user_id, self.message)
-            self.finished.emit(result)
-        except Exception as exc:
-            self.error.emit(str(exc))
-
-
-class VoiceWorker(QObject):
-    """语音录制工作线程（支持停止）"""
-    result_ready = pyqtSignal(object)  # str 或 None
-
-    def __init__(self):
-        super().__init__()
-        self._stop_event = threading.Event()
-
-    def stop(self):
-        self._stop_event.set()
-
-    def run(self):
-        try:
-            import speech_recognition as sr
-
-            r = sr.Recognizer()
-            with sr.Microphone() as source:
-                r.adjust_for_ambient_noise(source, duration=0.5)
-                audio = None
-                # 循环 + 短超时，让停止信号能及时响应
-                while not self._stop_event.is_set():
-                    try:
-                        audio = r.listen(
-                            source,
-                            timeout=0.5,        # 每0.5秒检查一次停止
-                            phrase_time_limit=10 # 检测到说话后最长录10秒
-                        )
-                        break
-                    except sr.WaitTimeoutError:
-                        continue
-
-            if self._stop_event.is_set():
-                self.result_ready.emit(None)
-                return
-
-            text = r.recognize_google(audio, language="zh-CN")
-            self.result_ready.emit(text)
-        except sr.RequestError:
-            # Google 语音识别网络不可达
-            self.result_ready.emit("[ERROR] 语音识别服务网络不通，请检查网络")
-        except sr.UnknownValueError:
-            self.result_ready.emit(None)
-        except Exception as e:
-            self.result_ready.emit(f"[ERROR] {e}")
+from chat.workers import ChatWorker, VoiceWorker
+from chat.cot_html import build_cot_html
 
 
 class ChatWindow(QWidget):
@@ -351,7 +285,9 @@ class ChatWindow(QWidget):
         <div style="font-family:Segoe UI, Arial; font-size:14px; line-height:1.6; padding:6px;">
         """
         for item in self.messages:
-            if item["role"] == "system":
+            if item["role"] == "cot":
+                html += item["html"]
+            elif item["role"] == "system":
                 text = escape(item['text']).strip()
                 html += f"""
                 <div style="margin: 6px 0; display:flex; justify-content:center; animation: fadeInUp 0.28s ease;">
@@ -477,16 +413,36 @@ class ChatWindow(QWidget):
 
     def _handle_response(self, result):
         self._stop_loading()
-        if isinstance(result, dict):
-            answer = (
-                result.get("response")
-                or result.get("answer")
-                or result.get("message")
-                or str(result)
-            )
-        else:
-            answer = result
 
+        # 提取内容（兼容多种返回格式）
+        reasoning = ""
+        tool_calls = []
+        if isinstance(result, dict):
+            # /chat 直接返回 {"answer":..., "reasoning":..., "tool_calls":...}
+            if "answer" in result:
+                answer = result["answer"]
+                reasoning = result.get("reasoning", "")
+                tool_calls = result.get("tool_calls", [])
+            # /chat_with_document 返回 {"response": {...}}
+            elif "response" in result:
+                inner = result["response"]
+                if isinstance(inner, dict):
+                    answer = inner.get("answer", str(inner))
+                    reasoning = inner.get("reasoning", "")
+                    tool_calls = inner.get("tool_calls", [])
+                else:
+                    answer = inner
+            else:
+                answer = str(result)
+        else:
+            answer = str(result)
+
+        # 先渲染 COT（思考链 + 工具调用）
+        cot_html = build_cot_html(reasoning, tool_calls)
+        if cot_html:
+            self.messages.append({"role": "cot", "html": cot_html})
+
+        # 后渲染最终回答
         self.messages[-1]["text"] = ""
         self._render_history()
         self._start_streaming(answer)

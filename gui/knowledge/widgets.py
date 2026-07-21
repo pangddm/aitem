@@ -168,7 +168,7 @@ class DropZone(QFrame):
         self._file_paths: list[str] = []
         self.setAcceptDrops(True)
         self.setObjectName("dropZone")
-        self.setMinimumHeight(160)
+        self.setMinimumHeight(180)
         self.setStyleSheet(
             f"""
             QFrame#dropZone {{
@@ -301,10 +301,16 @@ class StatusBar(QWidget):
         layout.setContentsMargins(0, 4, 0, 0)
         layout.setSpacing(8)
 
+        self.label = QLabel("处理中...")
+        self.label.setStyleSheet(Style.LABEL_BODY)
+        self.label.setWordWrap(True)
+        self.label.setMinimumWidth(200)
+
         self.progress = QProgressBar()
-        self.progress.setRange(0, 0)  # 不确定进度
+        self.progress.setRange(0, 0)
         self.progress.setFixedHeight(6)
         self.progress.setTextVisible(False)
+        self.progress.setMaximumWidth(250)
         self.progress.setStyleSheet(
             f"""
             QProgressBar {{
@@ -319,11 +325,8 @@ class StatusBar(QWidget):
             """
         )
 
-        self.label = QLabel("处理中...")
-        self.label.setStyleSheet(Style.LABEL_BODY)
-
-        layout.addWidget(self.label)
-        layout.addWidget(self.progress, 1)
+        layout.addWidget(self.label, 1)
+        layout.addWidget(self.progress, 0)
 
     def show_status(self, text: str, indeterminate: bool = True):
         self.label.setText(text)

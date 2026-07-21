@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from datetime import datetime
+from enum import Enum
 from uuid import uuid4
 
 from app.knowledge.embedding import EmbeddingService
@@ -19,6 +21,61 @@ from app.knowledge.repository.document_repository import (
 from app.knowledge.repository.incident_repository import (
     IncidentRepository,
 )
+
+
+# ══════════════════════════════════════════════════════════
+#  进度追踪（内存快照，供前端轮询）
+# ══════════════════════════════════════════════════════════
+
+class IngestStage(str, Enum):
+    LOADING = "loading"
+    CLEANING = "cleaning"
+    EXTRACTING = "extracting"
+    EMBEDDING = "embedding"
+    STORING = "storing"
+    DONE = "done"
+    FAILED = "failed"
+    DUPLICATE = "duplicate"
+
+
+class IngestProgress:
+    """单个文档的摄入进度快照"""
+
+    def __init__(self, document_id: str, filename: str):
+        self.document_id = document_id
+        self.filename = filename
+        self.stage = IngestStage.LOADING
+        self.message = "开始解析..."
+        self.pct = 0
+        self.error: str | None = None
+        self.incident_count = 0
+
+
+class ProgressTracker:
+    """全局进度追踪器（内存）"""
+
+    def __init__(self):
+        self._tasks: dict[str, IngestProgress] = {}
+
+    def start(self, document_id: str, filename: str) -> IngestProgress:
+        p = IngestProgress(document_id, filename)
+        self._tasks[document_id] = p
+        return p
+
+    def update(self, document_id: str, **kwargs):
+        if doc := self._tasks.get(document_id):
+            for k, v in kwargs.items():
+                setattr(doc, k, v)
+
+    def get(self, document_id: str) -> IngestProgress | None:
+        return self._tasks.get(document_id)
+
+    def remove(self, document_id: str):
+        self._tasks.pop(document_id, None)
+
+
+# 全局单例
+progress_tracker = ProgressTracker()
 
 
 class KnowledgeIngestionService:
@@ -48,6 +105,7 @@ class KnowledgeIngestionService:
         file_path: str,
         owner: str = "default",
         source: str = "upload",
+        document_id: str | None = None,
     ):
         """
         上传一个文件进入知识库
@@ -68,18 +126,51 @@ class KnowledgeIngestionService:
             ↓
         postgres
         """
+        if document_id is None:
+            document_id = str(uuid4())
+
+        progress_tracker.start(document_id, file_path)
+        progress_tracker.update(
+            document_id, stage=IngestStage.LOADING,
+            message="解析文件中...", pct=5,
+        )
 
         loaded = await self.loader.load(file_path)
+
+        progress_tracker.update(
+            document_id, stage=IngestStage.CLEANING,
+            message="文本清洗中...", pct=15,
+        )
 
         cleaned_text = self.cleaner.clean(
             loaded.text
         )
 
+        # ── 去重：计算文件内容 MD5，同一用户下跨知识库不重复入库 ──
+        content_hash = hashlib.md5(
+            loaded.text.encode("utf-8")
+        ).hexdigest()
+
+        existing = await self.document_repository.get_by_hash(
+            owner=owner,
+            content_hash=content_hash,
+        )
+        if existing is not None:
+            progress_tracker.update(
+                document_id, stage=IngestStage.DUPLICATE,
+                message="已存在，跳过", pct=100,
+            )
+            # 已存在，直接返回已有文档的 incidents
+            return await self.incident_repository.list_by_document(
+                existing.id
+            )
+        # ── 去重结束 ──
+
         now = datetime.utcnow()
 
         document = Document(
 
-            id=str(uuid4()),
+            id=document_id,
 
             owner=owner,
 
@@ -97,6 +188,8 @@ class KnowledgeIngestionService:
 
             ocr_text=cleaned_text,
 
+            content_hash=content_hash,
+
             parse_status=DocumentStatus.PROCESSING,
 
             metadata=loaded.metadata,
@@ -108,6 +201,11 @@ class KnowledgeIngestionService:
 
         await self.document_repository.create(
             document
+        )
+
+        progress_tracker.update(
+            document_id, stage=IngestStage.EXTRACTING,
+            message="LLM 提取知识中...", pct=30,
         )
 
         # 整文交给 LLM 提取
@@ -149,6 +247,11 @@ class KnowledgeIngestionService:
 
         if all_incidents:
 
+            progress_tracker.update(
+                document_id, stage=IngestStage.EMBEDDING,
+                message=f"向量化 {len(all_incidents)} 条知识...", pct=60,
+            )
+
             # 批量 embedding（一次 API 调用）
             embedding_texts = [
                 self.embedding_service.build_incident_text(
@@ -161,8 +264,19 @@ class KnowledgeIngestionService:
                 for inc in all_incidents
             ]
 
-            embeddings = await self.embedding_service.batch_embed(
-                embedding_texts
+            try:
+                embeddings = await self.embedding_service.batch_embed(
+                    embedding_texts
+                )
+            except Exception as emb_err:
+                # 捕获 embedding 具体错误，向上抛出有意义的提示
+                raise RuntimeError(
+                    f"向量化失败（{len(all_incidents)} 条知识）：{emb_err}"
+                ) from emb_err
+
+            progress_tracker.update(
+                document_id, stage=IngestStage.STORING,
+                message="写入数据库...", pct=85,
             )
 
             for incident, embedding in zip(
@@ -184,6 +298,12 @@ class KnowledgeIngestionService:
             document.id,
 
             DocumentStatus.COMPLETED,
+        )
+
+        progress_tracker.update(
+            document_id, stage=IngestStage.DONE,
+            message=f"完成，提取 {len(all_incidents)} 条知识",
+            pct=100, incident_count=len(all_incidents),
         )
 
         return all_incidents
@@ -214,6 +334,21 @@ class KnowledgeIngestionService:
             text
         )
 
+        # ── 去重（跨知识库）──
+        content_hash = hashlib.md5(
+            text.encode("utf-8")
+        ).hexdigest()
+
+        existing = await self.document_repository.get_by_hash(
+            owner=owner,
+            content_hash=content_hash,
+        )
+        if existing is not None:
+            return await self.incident_repository.list_by_document(
+                existing.id
+            )
+        # ── 去重结束 ──
+
         now = datetime.utcnow()
 
         document = Document(
@@ -235,6 +370,8 @@ class KnowledgeIngestionService:
             origin_text=text,
 
             ocr_text=cleaned,
+
+            content_hash=content_hash,
 
             parse_status=DocumentStatus.PROCESSING,
 

@@ -1,11 +1,13 @@
 import os
+import json as _json
 import traceback
 from uuid import uuid4
 
-from fastapi import APIRouter, BackgroundTasks, UploadFile, File, Form
+from fastapi import APIRouter, BackgroundTasks, UploadFile, File, Form, Query
+from fastapi.responses import StreamingResponse
 
 from app.schemas.request_format import ChatRequest
-from app.services.diagnosis_service import chat_with_agent
+from app.services.diagnosis_service import chat_with_agent, get_memory_service
 from app.document.parser import parse
 from app.memory.container import memory_container
 from app.memory.classes import MemorySource
@@ -55,6 +57,61 @@ async def _ingest_to_knowledge_base(owner: str, file_path: str):
 @router.post("/chat")
 async def chat(request: ChatRequest):
     return await chat_with_agent(user_id=request.user_id, user_message=request.message)
+
+
+@router.get("/chat/stream")
+async def chat_stream(
+    user_id: str = Query(...),
+    message: str = Query(...),
+):
+    """SSE 流式聊天——实时推送思考链、工具调用、答案"""
+
+    async def event_stream():
+        from app.llm.agent import run_agent_stream
+        try:
+            memory_service = await get_memory_service()
+            memories = await memory_service.search(owner=user_id, query=message)
+        except Exception:
+            memories = []
+
+        all_chunks = []
+        try:
+            async for event in run_agent_stream(user_id, message, memories=memories):
+                ct = event.get("content", "")
+                if event.get("type") == "answer_chunk" and ct:
+                    all_chunks.append(str(ct))
+                try:
+                    yield f"data: {_json.dumps(event, ensure_ascii=False)}\n\n"
+                except GeneratorExit:
+                    return
+        except Exception as e:
+            print(f"[SSE] Stream error: {type(e).__name__}: {e}")
+            traceback.print_exc()
+            try:
+                yield f"data: {_json.dumps({'type': 'error', 'content': str(e)[:200]}, ensure_ascii=False)}\n\n"
+            except Exception:
+                pass
+        finally:
+            # 无论成功失败，保存对话到 Redis
+            try:
+                from app.memory.short_term import SessionMemory
+                sm = SessionMemory()
+                history = sm.load(user_id)
+                history.append({"role": "user", "content": message})
+                if all_chunks:
+                    history.append({"role": "assistant", "content": "".join(all_chunks)})
+                sm.save(user_id, history)
+            except Exception:
+                pass
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post("/chat_with_document")

@@ -20,8 +20,9 @@ from PyQt6.QtWidgets import (
     QHeaderView,
     QMessageBox,
     QAbstractItemView,
+    QApplication,
 )
-from PyQt6.QtCore import Qt, QThread, QObject, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
 
 from .widgets import Style, Card, DropZone, StatusBar
 
@@ -35,8 +36,29 @@ class BatchUploadWidget(QWidget):
         self.kb_name = kb_name
         self.owner = owner
 
+        self.setAcceptDrops(True)
         self.setStyleSheet(f"background: {Style.BG_DARK}; color: {Style.TEXT_BODY};")
         self._setup_ui()
+
+    def dragEnterEvent(self, event):
+        print("[BatchUploadWidget] dragEnterEvent", flush=True)
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        print("[BatchUploadWidget] dropEvent", flush=True)
+        paths = [url.toLocalFile() for url in event.mimeData().urls() if url.isLocalFile()]
+        if paths:
+            self.drop_zone.set_files(paths)
+            self.upload_btn.setEnabled(True)
 
     def refresh(self, kb_id: str, kb_name: str):
         self.kb_id = kb_id
@@ -212,22 +234,29 @@ class BatchUploadWidget(QWidget):
         )
 
         # 启动线程上传单个文件
-        self.thread = QThread(self)
-        worker = SingleUploadWorker(
+        self._current_worker = UploadThread(
             self.kb_id, self.owner, fp,
         )
-        worker.moveToThread(self.thread)
-        self.thread.started.connect(worker.run)
-        worker.finished.connect(lambda r: self._on_file_done(r))
-        worker.error.connect(lambda e: self._on_file_error(e))
-        worker.finished.connect(self.thread.quit)
-        worker.error.connect(self.thread.quit)
-        self.thread.finished.connect(self._cleanup_single_thread)
-        self.thread.start()
+        self._current_worker.progress.connect(self._on_file_progress)
+        self._current_worker.finished_signal.connect(lambda r: self._on_file_done(r))
+        self._current_worker.error_signal.connect(lambda e: self._on_file_error(e))
+        self._current_worker.finished.connect(self._current_worker.deleteLater)
+        print(f"[GUI] _upload_next: 启动线程处理 {name}, kb_id={self.kb_id}", flush=True)
+        self._current_worker.start()
+
+    def _on_file_progress(self, filename: str, pct: int, message: str):
+        """实时更新当前文件处理进度"""
+        idx = self._upload_index
+        print(f"[GUI] _on_file_progress idx={idx} file={filename} pct={pct} msg={message[:40]}", flush=True)
+        if idx < self.result_table.rowCount():
+            self.result_table.item(idx, 1).setText(message)
+        self.status_bar.set_progress(pct)
+        self.status_bar.show_status(message)
 
     def _on_file_done(self, result: dict):
         idx = self._upload_index
         name = os.path.basename(self._upload_files[idx])
+        print(f"[GUI] _on_file_done idx={idx} file={name} result={result.get('success')}", flush=True)
 
         if result.get("success"):
             inc_count = result.get("incidents", 0)
@@ -254,6 +283,7 @@ class BatchUploadWidget(QWidget):
 
     def _on_file_error(self, error_msg: str):
         idx = self._upload_index
+        print(f"[GUI] _on_file_error idx={idx} error={error_msg[:80]}", flush=True)
         self.result_table.item(idx, 1).setText("❌ 失败")
         self.result_table.item(idx, 1).setToolTip(str(error_msg))
         self.result_table.item(idx, 2).setText("0")
@@ -312,18 +342,17 @@ class BatchUploadWidget(QWidget):
         self.result_table.setRowCount(0)
         self._upload_results = []
 
-    def _cleanup_single_thread(self):
-        if hasattr(self, "thread"):
-            self.thread.deleteLater()
-        if hasattr(self, "worker"):
-            self.worker.deleteLater()
 
+# ══════════════════════════════════════════════════════════
+#  上传线程（QThread 子类，直接重写 run）
+# ══════════════════════════════════════════════════════════
 
-class SingleUploadWorker(QObject):
-    """上传单个文件的工作线程"""
+class UploadThread(QThread):
+    """上传单个文件的后台线程 — 先上传获取 document_id，再轮询进度"""
 
-    finished = pyqtSignal(dict)
-    error = pyqtSignal(str)
+    progress = pyqtSignal(str, int, str)       # (filename, pct, message)
+    finished_signal = pyqtSignal(dict)          # 最终结果
+    error_signal = pyqtSignal(str)              # 错误信息
 
     def __init__(self, kb_id: str, owner: str, file_path: str):
         super().__init__()
@@ -332,10 +361,87 @@ class SingleUploadWorker(QObject):
         self.file_path = file_path
 
     def run(self):
-        from .knowledge_api import upload_document as single_upload
+        import time
+        import traceback
+        from .knowledge_api import upload_document as single_upload, get_document_status
 
         try:
+            filename = os.path.basename(self.file_path)
+            print(f"[BatchUpload] 开始处理: {filename}", flush=True)
+
+            # 1. 上传文件（后端立即返回 document_id）
+            self.progress.emit(filename, 5, "上传文件中...")
+            print(f"[BatchUpload] 上传中: {filename}", flush=True)
+
             result = single_upload(self.kb_id, self.owner, self.file_path)
-            self.finished.emit(result)
+            print(f"[BatchUpload] 上传响应: success={result.get('success')}, keys={list(result.keys())}", flush=True)
+
+            if not result.get("success"):
+                self.error_signal.emit(result.get("message", "上传失败"))
+                return
+
+            document_id = result.get("document_id")
+            if not document_id:
+                print(f"[BatchUpload] 同步响应（无document_id），直接完成: {filename}", flush=True)
+                self.finished_signal.emit(result)
+                return
+
+            print(f"[BatchUpload] 开始轮询: doc_id={document_id}", flush=True)
+
+            # 2. 轮询进度
+            max_wait = 600
+            start = time.time()
+
+            while time.time() - start < max_wait:
+                status = get_document_status(document_id)
+                stage = status.get("stage", "")
+                pct = status.get("pct", 0)
+                msg = status.get("message", "")
+
+                print(f"[BatchUpload] 轮询: stage={stage}, pct={pct}", flush=True)
+
+                display_msg = self._stage_label(stage, msg)
+                self.progress.emit(filename, pct, display_msg)
+
+                if stage in ("done", "failed", "duplicate"):
+                    if stage == "done":
+                        self.finished_signal.emit({
+                            "success": True,
+                            "incidents": status.get("incident_count", 0),
+                            "file": filename,
+                        })
+                    elif stage == "duplicate":
+                        self.finished_signal.emit({
+                            "success": True,
+                            "incidents": status.get("incident_count", 0),
+                            "file": filename,
+                            "duplicate": True,
+                        })
+                    else:
+                        self.error_signal.emit(status.get("error", "处理失败"))
+                    return
+
+                time.sleep(1.5)
+
+            self.progress.emit(filename, 99, "⏰ 处理超时")
+            self.error_signal.emit("处理超时")
+
         except Exception as e:
-            self.error.emit(str(e))
+            traceback.print_exc()
+            print(f"[BatchUpload] 异常: {e}", flush=True)
+            self.error_signal.emit(str(e))
+
+    @staticmethod
+    def _stage_label(stage: str, msg: str) -> str:
+        icons = {
+            "loading": "📄",
+            "cleaning": "🧹",
+            "extracting": "🧠",
+            "embedding": "📊",
+            "storing": "💾",
+            "done": "✅",
+            "failed": "❌",
+            "duplicate": "♻️",
+        }
+        icon = icons.get(stage, "⏳")
+        return f"{icon} {msg}"

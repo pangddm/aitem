@@ -35,6 +35,8 @@ class DocumentRepository:
                     origin_text,
                     ocr_text,
 
+                    content_hash,
+
                     parse_status,
 
                     metadata,
@@ -56,7 +58,9 @@ class DocumentRepository:
 
                     $11,
 
-                    $12,$13
+                    $12,
+
+                    $13,$14
                 )
                 """,
                 document.id,
@@ -71,6 +75,8 @@ class DocumentRepository:
                 document.origin_text,
                 document.ocr_text,
 
+                document.content_hash,
+
                 document.parse_status.value,
 
                 document.metadata,
@@ -78,6 +84,32 @@ class DocumentRepository:
                 document.created_at,
                 document.updated_at,
             )
+
+    async def get_by_hash(
+        self,
+        owner: str,
+        content_hash: str,
+    ) -> Document | None:
+        """按 owner + content_hash 查找，跨知识库去重"""
+
+        async with self.pool.acquire() as conn:
+
+            row = await conn.fetchrow(
+                """
+                SELECT *
+                FROM document
+                WHERE owner=$1
+                  AND content_hash=$2
+                LIMIT 1
+                """,
+                owner,
+                content_hash,
+            )
+
+        if row is None:
+            return None
+
+        return self._convert(row)
 
     async def get(
         self,
@@ -319,6 +351,8 @@ class DocumentRepository:
             parse_status=DocumentStatus(
                 row["parse_status"]
             ),
+
+            content_hash=row.get("content_hash"),
 
             metadata=row["metadata"] or {},
 

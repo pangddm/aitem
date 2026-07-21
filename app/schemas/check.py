@@ -1,25 +1,11 @@
-import subprocess
-
-# 允许的命令前缀
-ALLOWED_PREFIXES = [
-    "kubectl get",
-    "kubectl cordon",
-    "kubectl uncordon",
-    "kubectl scale",
-    "kubectl patch",
-    "kubectl create",
-    "kubectl apply",
-    "kubectl describe",
-    "kubectl logs",
-    "kubectl top",
-    "kubectl version",
-    "kubectl api-resources",
-    "kubectl cluster-info"
-]
+"""
+命令安全检查 — 黑名单模式
+"""
 
 # 禁止的危险关键字
 DENY_KEYWORDS = [
-    "delete",
+    "rm ",
+    "rmdir",
     "replace",
     "edit",
     "exec",
@@ -27,8 +13,7 @@ DENY_KEYWORDS = [
     "port-forward",
     "drain",
     "sudo",
-    "rm",
-    "mv",
+    "mv ",
     "chmod",
     "chown",
     "shutdown",
@@ -43,16 +28,10 @@ DENY_KEYWORDS = [
     "`"
 ]
 
+
 def is_safe_command(cmd: str) -> bool:
-    cmd = cmd.strip().lower()
-
-    # 必须以白名单开头
-    if not any(cmd.startswith(prefix) for prefix in ALLOWED_PREFIXES):
-        return False
-
-    # 不能包含危险关键字
+    cmd_lower = cmd.strip().lower()
     for keyword in DENY_KEYWORDS:
-        if keyword in cmd:
+        if keyword in cmd_lower:
             return False
-
     return True

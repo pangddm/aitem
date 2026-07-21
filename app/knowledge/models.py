@@ -86,6 +86,8 @@ class Document:
 
     ocr_text: str
 
+    content_hash: str | None = None
+
     parse_status: DocumentStatus = DocumentStatus.PENDING
 
     metadata: dict[str, Any] = field(default_factory=dict)
