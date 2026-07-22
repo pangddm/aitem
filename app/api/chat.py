@@ -7,11 +7,12 @@ from fastapi import APIRouter, BackgroundTasks, UploadFile, File, Form, Query
 from fastapi.responses import StreamingResponse
 
 from app.schemas.request_format import ChatRequest
-from app.services.diagnosis_service import chat_with_agent, get_memory_service
+from app.services.diagnosis_service import chat_with_agent, get_memory_service, _retrieve_knowledge_context
 from app.document.parser import parse
 from app.memory.container import memory_container
 from app.memory.classes import MemorySource
 from app.knowledge.factory import knowledge_factory
+from app.llm.agents import AgentWorkflow
 
 router = APIRouter()
 print("chat router loaded")
@@ -23,7 +24,6 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 async def _ingest_to_knowledge_base(owner: str, file_path: str):
     """后台任务：将聊天附件导入用户的知识库"""
     try:
-        # 查找或创建用户的默认知识库
         kbs = await knowledge_factory.kb_repository.list_by_owner(owner)
         if kbs:
             kb_id = kbs[0].id
@@ -67,16 +67,23 @@ async def chat_stream(
     """SSE 流式聊天——实时推送思考链、工具调用、答案"""
 
     async def event_stream():
-        from app.llm.agent import run_agent_stream
         try:
             memory_service = await get_memory_service()
             memories = await memory_service.search(owner=user_id, query=message)
         except Exception:
             memories = []
 
+        knowledge_context = await _retrieve_knowledge_context(user_id, message)
+
         all_chunks = []
         try:
-            async for event in run_agent_stream(user_id, message, memories=memories):
+            workflow = AgentWorkflow()
+            async for event in workflow.run_stream(
+                user_id=user_id,
+                user_message=message,
+                memories=memories,
+                knowledge_context=knowledge_context,
+            ):
                 ct = event.get("content", "")
                 if event.get("type") == "answer_chunk" and ct:
                     all_chunks.append(str(ct))
@@ -92,7 +99,6 @@ async def chat_stream(
             except Exception:
                 pass
         finally:
-            # 无论成功失败，保存对话到 Redis
             try:
                 from app.memory.short_term import SessionMemory
                 sm = SessionMemory()
@@ -121,29 +127,19 @@ async def chat_with_document(
     message: str = Form(...),
     file: UploadFile = File(...),
 ):
-    # =====================
-    # 1. 保存文件
-    # =====================
     file_path = os.path.join(UPLOAD_DIR, file.filename)
     content = await file.read()
     with open(file_path, "wb") as f:
         f.write(content)
 
-    # =====================
-    # 2. 后台异步入库 RAG（不阻塞聊天响应）
-    # =====================
     background_tasks.add_task(
         _ingest_to_knowledge_base,
         owner=user_id,
         file_path=file_path,
     )
 
-    # =====================
-    # 3. 解析文档（图片由千问提取）
-    # =====================
     try:
         chunks = parse(file_path)
-        # 组装文档内容
         doc_lines = []
         for chunk in chunks:
             ctype = chunk.get("type", "text")
@@ -158,11 +154,6 @@ async def chat_with_document(
         document_content = ""
         chunks = []
 
-    # =====================
-    # 4. 文档中有用信息 → 存入长期记忆
-    #    MemoryExtractor 会用 DeepSeek 自动判断
-    #    哪些是值得记的有用信息，不会全量存
-    # =====================
     if chunks:
         try:
             memory_messages = []
@@ -184,13 +175,9 @@ async def chat_with_document(
                 source=MemorySource.DOCUMENT,
             )
         except Exception as e:
-            # 记忆存储失败不影响主流程
             print(f"Document memory storage error: {e}")
             traceback.print_exc()
 
-    # =====================
-    # 5. 组装完整用户消息
-    # =====================
     if document_content:
         full_message = f"""用户问题：{message}
 
@@ -206,9 +193,6 @@ async def chat_with_document(
     else:
         full_message = message
 
-    # =====================
-    # 6. 调用 Agent（DeepSeek）
-    # =====================
     response = await chat_with_agent(
         user_id=user_id,
         user_message=full_message,
