@@ -7,23 +7,24 @@ from app.llm.agents.base_agent import BaseAgent
 
 
 REPORTER_PROMPT = """
-你是 Kubernetes 运维报告专家。
+你是 Kubedoctor，一个友好的 Kubernetes 运维助手。
 
-你的职责是将多 Agent 协作的流程结果，汇总为清晰、专业、人类可读的报告。
+你的职责是将多 Agent 协作的流程结果，用自然、对话式的中文告诉用户。
 
-报告要求：
-1. 使用中文
-2. 结构清晰，包含：操作概述、执行结果、状态分析、建议
+回复要求：
+1. 使用中文，像朋友聊天一样自然，不要使用"报告"、"操作概述"等正式格式
+2. 直接告诉用户发生了什么、结果是什么，用简洁的要点说明
 3. 如果有错误，给出可能的排查方向
-4. 保持简洁专业，不啰嗦
+4. 保持简洁，不啰嗦
 5. 如果是理论知识问答，直接回答用户问题
 6. 【重要】如果 validator_explanation 提示"需要先查询"或用户意图是操作但执行的是查询命令（如 kubectl get pods），
    你必须把查询结果展示给用户，然后明确引导用户指定具体要操作的资源名称。
    例如："当前有以下 Pod：\n- nginx-xxx  Running\n- nginx-yyy  Running\n\n你想重启哪一个？"
    不要直接替用户做决定，也不要只说"查询成功"就结束。
+7. 【重要】如果有多轮执行历史，综合所有轮次的结果给出完整回答，不要只关注最后一轮
 
 输出格式：
-纯文本，不需要 JSON。直接输出报告内容。
+纯文本，不需要 JSON。直接输出对话内容。
 """
 
 
@@ -115,6 +116,21 @@ class Reporter(BaseAgent):
         details = observation.get("details", "")
         risk = risk_assessment.get("risk_level", "")
 
+        # 构建多轮执行历史
+        import json as _json
+        history_text = ""
+        if all_execution_results and all_observations and len(all_execution_results) > 1:
+            history_text = "\n## 执行历史（多轮）\n"
+            for i, (res, obs) in enumerate(zip(all_execution_results, all_observations)):
+                history_text += f"""
+### 第 {i+1} 轮
+- 命令: `{res.get('command', '')}`
+- 输出: {str(res.get('result', ''))[:800]}
+- 状态: {obs.get('status', 'unknown')}
+- 发现: {obs.get('findings', '')}
+"""
+            history_text += "\n请综合以上所有轮次的执行结果，给出完整的诊断报告。\n"
+
         validator_note = validation.get("explanation", "")
         report_prompt = f"""
 用户意图: {user_intent}
@@ -125,6 +141,7 @@ validator_explanation: {validator_note}
 状态: {status}
 观察发现: {findings}
 详细结果: {details}
+{history_text}
 """
 
         system_prompt = REPORTER_PROMPT
@@ -142,7 +159,9 @@ validator_explanation: {validator_note}
                            validation: dict, execution_result: dict,
                            observation: dict,
                            memories: list = None,
-                           knowledge_context: str = ""):
+                           knowledge_context: str = "",
+                           all_execution_results: list = None,
+                           all_observations: list = None):
         """
         流式输出报告，yield 字典事件
 
@@ -157,11 +176,17 @@ validator_explanation: {validator_note}
             system_prompt = "你是 Kubernetes 运维专家，请用中文回答用户的问题。"
             if extra_context:
                 system_prompt += f"\n\n{extra_context}"
+            has_content = False
             async for event in self.think_stream(
                 system_prompt=system_prompt,
                 user_message=task_plan.get("description", ""),
             ):
+                if event.get("type") == "content" and event.get("content"):
+                    has_content = True
                 yield event
+            # 如果 LLM 返回空内容，给出兜底提示
+            if not has_content:
+                yield {"type": "content", "content": "⚠️ AI 服务暂时不可用，请稍后重试。如果问题持续，请检查 LLM API 配置。"}
             return
 
         # 命令被拦截 — 直接输出文本，不走流式
@@ -194,6 +219,21 @@ validator_explanation: {validator_note}
         details = observation.get("details", "")
         risk = risk_assessment.get("risk_level", "")
 
+        # 构建多轮执行历史
+        import json as _json
+        history_text = ""
+        if all_execution_results and all_observations and len(all_execution_results) > 1:
+            history_text = "\n## 执行历史（多轮）\n"
+            for i, (res, obs) in enumerate(zip(all_execution_results, all_observations)):
+                history_text += f"""
+### 第 {i+1} 轮
+- 命令: `{res.get('command', '')}`
+- 输出: {str(res.get('result', ''))[:800]}
+- 状态: {obs.get('status', 'unknown')}
+- 发现: {obs.get('findings', '')}
+"""
+            history_text += "\n请综合以上所有轮次的执行结果，给出完整的诊断报告。\n"
+
         validator_note = validation.get("explanation", "")
         report_prompt = f"""
 用户意图: {user_intent}
@@ -204,6 +244,7 @@ validator_explanation: {validator_note}
 状态: {status}
 观察发现: {findings}
 详细结果: {details}
+{history_text}
 """
 
         system_prompt = REPORTER_PROMPT

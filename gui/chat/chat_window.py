@@ -101,6 +101,34 @@ class ChatWindow(QWidget):
         self.kb_btn.clicked.connect(self._open_knowledge_base)
         header.addWidget(self.kb_btn)
 
+        # 测试模式开关
+        self.test_mode_btn = QPushButton("🧪 测试模式: 关")
+        self.test_mode_btn.setCheckable(True)
+        self.test_mode_btn.setStyleSheet(
+            """
+            QPushButton {
+                background: #1f2937;
+                color: #e2e8f0;
+                border: 1px solid #374151;
+                border-radius: 10px;
+                padding: 6px 14px;
+                font-size: 13px;
+                font-weight: 600;
+            }
+            QPushButton:hover {
+                background: #374151;
+                border-color: #f59e0b;
+            }
+            QPushButton:checked {
+                background: #78350f;
+                border-color: #f59e0b;
+                color: #fbbf24;
+            }
+            """
+        )
+        self.test_mode_btn.clicked.connect(self._toggle_test_mode)
+        header.addWidget(self.test_mode_btn)
+
         header.addStretch()
 
         self.status_label = QLabel("就绪")
@@ -250,6 +278,36 @@ class ChatWindow(QWidget):
                 background: #111827;
             }
         """
+
+    # ───────────────────────────────
+    #  测试模式开关
+    # ───────────────────────────────
+    def _toggle_test_mode(self):
+        """切换测试模式"""
+        import requests
+        is_checked = self.test_mode_btn.isChecked()
+        try:
+            resp = requests.post(
+                f"http://localhost:8000/chat/settings",
+                params={"test_mode": is_checked},
+                timeout=5,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("success"):
+                    mode_text = "开" if is_checked else "关"
+                    self.test_mode_btn.setText(f"🧪 测试模式: {mode_text}")
+                    self.status_label.setText(f"测试模式已{'开启' if is_checked else '关闭'} — 命令黑白名单已{'跳过' if is_checked else '启用'}")
+                    QTimer.singleShot(3000, lambda: self.status_label.setText("就绪"))
+                else:
+                    self.test_mode_btn.setChecked(not is_checked)
+                    self.status_label.setText("❌ 切换失败")
+            else:
+                self.test_mode_btn.setChecked(not is_checked)
+                self.status_label.setText("❌ 切换失败")
+        except Exception as e:
+            self.test_mode_btn.setChecked(not is_checked)
+            self.status_label.setText(f"❌ 连接失败: {e}")
 
     # ───────────────────────────────
     #  知识库管理（打开独立窗口）
@@ -624,6 +682,7 @@ class ChatWindow(QWidget):
         self.worker.event_answer_chunk.connect(self._on_stream_answer)
         self.worker.event_tool_call.connect(self._on_stream_tool_call)
         self.worker.event_tool_result.connect(self._on_stream_tool_result)
+        self.worker.event_command_rewritten.connect(self._on_command_rewritten)
         self.worker.event_done.connect(self._on_stream_done)
         self.worker.event_error.connect(self._on_stream_error)
         self.worker.event_done.connect(self.thread.quit)
@@ -690,6 +749,13 @@ class ChatWindow(QWidget):
             if tc["tool"] == tool and tc["result"] == "执行中...":
                 tc["result"] = result[:300]; break
         self._render_history()
+
+    def _on_command_rewritten(self, original: str, rewritten: str):
+        """问题被重写后，在聊天区显示系统消息"""
+        # 截断过长的内容
+        orig_short = original[:80] + "..." if len(original) > 80 else original
+        rewritten_short = rewritten[:120] + "..." if len(rewritten) > 120 else rewritten
+        self._add_system_message(f"🔍 问题已优化：{rewritten_short}")
 
     def _on_stream_done(self):
         # 等 COT 滴完

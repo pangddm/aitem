@@ -33,6 +33,19 @@ class KnowledgeCategory(str, Enum):
     DOC = "doc"                  # 通用文档
 
 
+class IncidentCategory(str, Enum):
+    """知识案例的资源类型分类（用于自动学习）"""
+
+    DEPLOYMENT = "deployment"
+    POD = "pod"
+    SERVICE = "service"
+    NETWORK = "network"
+    STORAGE = "storage"
+    CONFIG = "config"
+    DOC = "doc"  # 通用文档（兼容旧数据）
+    OTHER = "other"
+
+
 # ==========================================================
 # Knowledge Base
 # ==========================================================
@@ -153,7 +166,7 @@ class Incident:
 
     solution: str
 
-    category: KnowledgeCategory = KnowledgeCategory.DOC
+    category: IncidentCategory = IncidentCategory.OTHER
 
     # Parent-Child Chunking: child=Incident 本身, parent=原始章节全文
     context_text: str = ""

@@ -8,7 +8,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
 
-from app.llm.client import client
+from app.llm.client import get_client
 
 from app.prompt.memory import MEMORY_EXTRACT_PROMPT
 
@@ -151,7 +151,7 @@ class MemoryExtractor:
 
 
         response = await (
-            client.chat.completions.create(
+            get_client().chat.completions.create(
 
                 model=self.model,
 

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Literal, Optional
 
 
-from app.llm.client import client
+from app.llm.client import get_client
 
 from app.memory.classes import Memory, MemoryType
 
@@ -239,7 +239,7 @@ class MemoryMerger:
                 """
 
 
-        response = await client.chat.completions.create(
+        response = await get_client().chat.completions.create(
 
             model=self.model,
 

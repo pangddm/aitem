@@ -9,8 +9,8 @@ import asyncpg
 from app.knowledge.models import (
     CommandTrace,
     Incident,
+    IncidentCategory,
     IncidentSource,
-    KnowledgeCategory,
 )
 
 
@@ -50,7 +50,7 @@ class IncidentRepository:
                 row["source"]
             ),
 
-            category=KnowledgeCategory(
+            category=IncidentCategory(
                 row["category"]
             ),
 
@@ -242,6 +242,17 @@ class IncidentRepository:
                     incident.commands,
                     start=1,
                 ):
+                    # 防御性处理：兼容 dict 和 CommandTrace 对象
+                    if isinstance(cmd, dict):
+                        command = cmd.get("command", "")
+                        stdout = cmd.get("stdout", "")
+                        stderr = cmd.get("stderr", "")
+                        exit_code = cmd.get("exit_code", 0)
+                    else:
+                        command = cmd.command
+                        stdout = cmd.stdout
+                        stderr = cmd.stderr
+                        exit_code = cmd.exit_code
 
                     await conn.execute(
                         """
@@ -278,13 +289,13 @@ class IncidentRepository:
 
                         step,
 
-                        cmd.command,
+                        command,
 
-                        cmd.stdout,
+                        stdout,
 
-                        cmd.stderr,
+                        stderr,
 
-                        cmd.exit_code,
+                        exit_code,
                     )
     # ==========================================================
     # Batch Create (optimized: single transaction)

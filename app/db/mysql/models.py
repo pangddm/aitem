@@ -26,3 +26,9 @@ class User(Base):
         String(255),
         nullable=False
     )
+
+    salt = Column(
+        String(32),
+        nullable=False,
+        default=""
+    )

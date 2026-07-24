@@ -1,12 +1,12 @@
 """快速测试 DeepSeek API 是否可用"""
 import asyncio
-from app.llm.client import client
+from app.llm.client import get_client
 
 async def test():
     print("正在调用 DeepSeek API...")
     try:
         response = await asyncio.wait_for(
-            client.chat.completions.create(
+            get_client().chat.completions.create(
                 model="deepseek-v4-flash",
                 messages=[
                     {"role": "user", "content": "你好，请说一个词"},

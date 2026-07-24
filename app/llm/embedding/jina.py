@@ -23,10 +23,10 @@ class JinaEmbedding(EmbeddingModel):
 
         self.client = httpx.AsyncClient(
             timeout=httpx.Timeout(
-                connect=10.0,
-                read=60.0,
-                write=30.0,
-                pool=30.0,
+                connect=5.0,
+                read=30.0,
+                write=15.0,
+                pool=15.0,
             )
         )
 

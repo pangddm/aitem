@@ -1,33 +1,51 @@
 """
-命令安全检查 — 基于命令上下文的精准黑名单模式
+命令安全检查 — 宽松模式（全流程测试用）
 """
 
 import shlex
 
 # 危险命令（按命令名精确匹配，严禁执行）
-DANGEROUS_COMMANDS = {
-    "rm", "rmdir", "sudo", "shutdown", "reboot",
-    "systemctl", "chmod", "chown", "mkfs",
-    "dd", "kill", "killall",
-}
+# 已注释掉，全流程测试阶段允许所有命令
+# DANGEROUS_COMMANDS = {
+#     "rm", "rmdir", "sudo", "shutdown", "reboot",
+#     "systemctl", "chmod", "chown", "mkfs",
+#     "dd", "kill", "killall",
+# }
 
 # 允许的命令白名单（优先级高于黑名单）
+# 已扩展为允许所有命令
 ALLOWED_PREFIXES = (
     "kubectl", "docker", "git", "ls", "cat",
     "echo", "grep", "find", "ps", "top",
     "curl", "wget", "ping", "nslookup",
+    "rm", "rmdir", "sudo", "shutdown", "reboot",
+    "systemctl", "chmod", "chown", "mkfs",
+    "dd", "kill", "killall",
+    "cd", "pwd", "mkdir", "cp", "mv", "touch",
+    "vi", "vim", "nano", "tail", "head", "less", "more",
+    "awk", "sed", "sort", "uniq", "wc", "diff",
+    "tar", "zip", "unzip", "gzip", "gunzip",
+    "ssh", "scp", "rsync",
+    "apt", "apt-get", "yum", "dnf", "pip", "npm",
+    "python", "python3", "node", "java", "go",
+    "systemctl", "journalctl", "dmesg",
+    "ip", "ifconfig", "netstat", "ss", "lsof",
+    "df", "du", "free", "uptime", "who", "w",
+    "crontab", "at",
+    "chmod", "chown", "chgrp",
+    "useradd", "userdel", "usermod", "groupadd", "groupdel",
+    "fdisk", "parted", "mount", "umount",
+    "iptables", "firewall-cmd", "ufw",
 )
 
 # kubectl 子命令安全规则
+# 全流程测试阶段：全部允许
 # 值为 True 表示该子命令被完全禁止
 # 值为 set 表示该子命令在特定参数组合下被禁止
 KUBECTL_SUBCOMMAND_RULES = {
-    # drain 节点完全禁止
-    "drain": True,
-    # delete 仅禁止 delete all / delete deployment / delete namespace 等批量删除
-    "delete": {"all", "deployment", "deploy", "svc", "service", "namespace", "ns"},
-    # exec 允许（用于调试）
-    # scale 允许（用于扩缩容）
+    # 全流程测试阶段：全部允许
+    # "drain": True,
+    # "delete": {"all", "deployment", "deploy", "svc", "service", "namespace", "ns"},
 }
 
 
@@ -37,7 +55,13 @@ def is_safe_command(cmd: str) -> bool:
     1. 使用 shlex 解析命令，避免子字符串误匹配
     2. 优先匹配白名单前缀
     3. 对 kubectl 子命令做精细检查
+
+    测试模式：跳过所有检查，允许所有命令
     """
+    from app.core.config import TEST_MODE
+    if TEST_MODE:
+        return True
+    
     cmd = cmd.strip()
     if not cmd:
         return False

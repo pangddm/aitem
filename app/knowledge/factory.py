@@ -29,7 +29,7 @@ from app.knowledge.repository.knowledge_base_repository import (
 )
 from app.knowledge.retriever import Retriever
 from app.knowledge.service import KnowledgeService
-from app.llm.client import client as llm_client
+from app.llm.client import get_client
 from app.llm.embedding.factory import get_embedding
 
 
@@ -113,7 +113,7 @@ class KnowledgeFactory:
     def extractor(self) -> IncidentExtractor:
         if self._extractor is None:
             self._extractor = IncidentExtractor(
-                llm_client=llm_client,
+                llm_client=get_client(),
             )
         return self._extractor
 
@@ -123,7 +123,7 @@ class KnowledgeFactory:
     def reranker(self) -> Reranker:
         if self._reranker is None:
             self._reranker = Reranker(
-                llm_client=llm_client,
+                llm_client=get_client(),
             )
         return self._reranker
 

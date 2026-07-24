@@ -1,4 +1,4 @@
-from app.llm.client import client
+from app.llm.client import get_client
 from app.prompt.sys import SYSTEM_PROMPT
 from app.prompt.tools import TOOLS
 from app.knowledge.factory import knowledge_factory
@@ -11,7 +11,7 @@ from app.memory.container import memory_container
 from app.memory.short_term_bridge import ShortTermMemoryBridge
 from app.memory.repository.graph_repository import GraphRepository
 from app.db.neo4j import neo4j
-MAX_ROUNDS = 6  # 防止无限 LLM ↔ tool 循环
+MAX_ROUNDS = 10  # 防止无限 LLM ↔ tool 循环
 
 
 def _extract_entities_from_command(command: str):
@@ -158,7 +158,7 @@ async def run_agent(
 
         round_count += 1
 
-        response = await client.chat.completions.create(
+        response = await get_client().chat.completions.create(
             model="deepseek-v4-flash",
             messages=messages,
             tools=TOOLS
@@ -374,7 +374,7 @@ async def run_agent_stream(
         round_count += 1
 
         try:
-            stream = await client.chat.completions.create(
+            stream = await get_client().chat.completions.create(
                 model="deepseek-v4-flash",
                 messages=messages,
                 tools=TOOLS,

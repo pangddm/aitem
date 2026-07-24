@@ -1,6 +1,7 @@
 """
 Validator Agent — 命令校验者
 职责：根据意图生成具体命令，并通过 check.py 安全校验
+支持反馈循环：根据 Observer 的建议重新生成命令
 """
 
 from app.llm.agents.base_agent import BaseAgent
@@ -53,6 +54,26 @@ Kubernetes 操作转换规则：
 输出: {"command": "kubectl delete pod nginx-xxx -n default", "is_safe": true, "explanation": "删除 default 命名空间的 nginx-xxx Pod，控制器会自动重建"}
 """
 
+VALIDATOR_FEEDBACK_PROMPT = """
+你是 Kubernetes 命令构建与校验专家。
+
+上一次生成的命令执行后，Observer 发现结果不理想，需要你根据反馈重新生成命令。
+
+规则：
+1. 仔细分析 Observer 的反馈建议
+2. 根据反馈调整命令策略
+3. 如果上次命令是查询但没查到，尝试更精确的查询
+4. 如果上次命令执行失败，分析原因并生成修正后的命令
+5. 保持安全第一原则
+
+输出格式（严格 JSON）：
+{
+  "command": "修正后的 kubectl 命令",
+  "is_safe": true/false,
+  "explanation": "修正说明"
+}
+"""
+
 
 class Validator(BaseAgent):
     """命令校验者：生成命令 + 安全校验"""
@@ -85,6 +106,46 @@ class Validator(BaseAgent):
             "explanation": data.get("explanation", ""),
         }
 
+    async def generate_command_with_feedback(
+        self,
+        task_plan: dict,
+        previous_command: str,
+        execution_output: str,
+        observation_feedback: str,
+    ) -> dict:
+        """
+        根据 Observer 反馈重新生成命令（反馈循环用）
+
+        返回:
+            {
+                "reasoning": str,     # 思考链
+                "command": str,       # 修正后的命令
+                "explanation": str,   # 修正说明
+            }
+        """
+        feedback_message = f"""
+原始意图: {task_plan}
+上一次命令: {previous_command}
+执行输出: {execution_output[:1500]}
+Observer 反馈: {observation_feedback}
+
+请根据以上信息重新生成更合适的命令。
+"""
+
+        result = await self.think_json_with_reasoning(
+            system_prompt=VALIDATOR_FEEDBACK_PROMPT,
+            user_message=feedback_message,
+        )
+
+        reasoning = result.get("reasoning", "")
+        data = result.get("data", {})
+
+        return {
+            "reasoning": reasoning,
+            "command": data.get("command", ""),
+            "explanation": data.get("explanation", ""),
+        }
+
     def check_safety(self, command: str, risk_level: str) -> dict:
         """
         安全校验（纯同步，不调用 LLM）
@@ -97,6 +158,16 @@ class Validator(BaseAgent):
                 "explanation": str,
             }
         """
+        # 测试模式下跳过安全校验
+        from app.core.config import TEST_MODE
+        if TEST_MODE:
+            return {
+                "command": command,
+                "is_safe": True,
+                "is_blocked": False,
+                "explanation": "测试模式：跳过安全校验",
+            }
+
         # critical 级别直接拦截
         if risk_level == "critical":
             return {

@@ -38,6 +38,7 @@ class StreamChatWorker(QObject):
     event_answer_chunk = pyqtSignal(str)
     event_tool_call = pyqtSignal(str, str)
     event_tool_result = pyqtSignal(str, str)
+    event_command_rewritten = pyqtSignal(str, str)  # original, rewritten
     event_done = pyqtSignal()
     event_error = pyqtSignal(str)
 
@@ -66,6 +67,11 @@ class StreamChatWorker(QObject):
                 etype = event.get("type", "")
                 if etype == "reasoning":
                     self.event_reasoning.emit(event.get("content", ""))
+                elif etype == "command_rewritten":
+                    self.event_command_rewritten.emit(
+                        event.get("original", ""),
+                        event.get("rewritten", ""),
+                    )
                 elif etype == "answer_chunk":
                     self.event_answer_chunk.emit(event.get("content", ""))
                 elif etype == "tool_call":

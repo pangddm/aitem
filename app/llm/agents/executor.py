@@ -16,7 +16,7 @@ class Executor(BaseAgent):
     def __init__(self):
         super().__init__(name="executor")
 
-    async def execute(self, command: str) -> dict:
+    async def execute(self, command: str, host: str = None, port: int = None, username: str = None, password: str = None) -> dict:
         """
         执行命令，返回结果
 
@@ -46,7 +46,7 @@ class Executor(BaseAgent):
         )
 
         try:
-            result = await execute_tool(fake_tool_call)
+            result = await execute_tool(fake_tool_call, host=host, port=port, username=username, password=password)
             return {
                 "command": command,
                 "success": True,
