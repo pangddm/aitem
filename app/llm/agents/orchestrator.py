@@ -26,9 +26,22 @@ ORCHESTRATOR_PROMPT = """
   "requires_execution": true/false
 }
 
+requires_execution 规则：
+- 查询集群状态（查看、显示、列出、检查 Pod/Node/Deployment 等）→ requires_execution: true
+  （因为需要执行 kubectl 命令获取真实数据）
+- 需要执行操作（重启、删除、创建、修改、扩容等）→ requires_execution: true
+- 诊断问题（排查、修复、解决等）→ requires_execution: true
+- 理论知识、闲聊、解释概念（什么是、Kubernetes 是什么等）→ requires_execution: false
+
 示例：
 用户: "查看所有 Pod"
 输出: {"intent": "query", "task_type": "get", "target": "pod", "resource_name": "", "namespace": "", "description": "查看所有 Pod", "requires_execution": true}
+
+用户: "显示当前运行的容器"
+输出: {"intent": "query", "task_type": "get", "target": "pod", "resource_name": "", "namespace": "default", "description": "查看 default 命名空间下所有正在运行的 Pod", "requires_execution": true}
+
+用户: "pod 什么情况"
+输出: {"intent": "query", "task_type": "get", "target": "pod", "resource_name": "", "namespace": "default", "description": "查看 default 命名空间下所有 Pod 的状态", "requires_execution": true}
 
 用户: "重启 nginx 服务"
 输出: {"intent": "operate", "task_type": "restart", "target": "deployment", "resource_name": "nginx", "namespace": "", "description": "重启 nginx deployment", "requires_execution": true}
@@ -38,6 +51,9 @@ ORCHESTRATOR_PROMPT = """
 
 用户: "什么是 Deployment"
 输出: {"intent": "query", "task_type": "other", "target": "unknown", "resource_name": "", "namespace": "", "description": "询问 Kubernetes 理论知识", "requires_execution": false}
+
+用户: "帮我看看集群状态"
+输出: {"intent": "query", "task_type": "get", "target": "node", "resource_name": "", "namespace": "", "description": "查看集群整体状态", "requires_execution": true}
 """
 
 
@@ -47,9 +63,13 @@ class Orchestrator(BaseAgent):
     def __init__(self):
         super().__init__(name="orchestrator")
 
-    async def analyze(self, user_message: str) -> dict:
+    async def analyze(self, user_message: str, conversation_history: list = None) -> dict:
         """
         分析用户意图，返回包含 task_plan 和 reasoning 的字典
+        
+        参数:
+            user_message: 用户当前消息
+            conversation_history: 当前对话的历史消息列表（用于理解上下文）
         
         返回:
             {
@@ -57,9 +77,23 @@ class Orchestrator(BaseAgent):
                 "task_plan": dict,   # 任务计划
             }
         """
+        # 构建包含对话历史的 prompt
+        prompt = user_message
+        if conversation_history:
+            history_text = "\n".join([
+                f"{'用户' if m['role'] == 'user' else '助手'}: {m['content'][:200]}"
+                for m in conversation_history[-5:]  # 最近5条
+            ])
+            prompt = f"""当前对话历史（最近5条）：
+{history_text}
+
+用户当前问题：{user_message}
+
+请基于以上对话历史分析用户意图。"""
+        
         result = await self.think_json_with_reasoning(
             system_prompt=ORCHESTRATOR_PROMPT,
-            user_message=user_message,
+            user_message=prompt,
         )
 
         reasoning = result.get("reasoning", "")

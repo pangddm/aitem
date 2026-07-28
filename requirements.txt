@@ -1,0 +1,29 @@
+# Web Framework
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+
+# LLM / AI
+openai==1.59.7
+httpx==0.28.1
+
+# Database
+asyncpg==0.30.0
+neo4j==5.27.0
+redis==5.2.1
+
+# Config
+python-dotenv==1.0.1
+pydantic==2.10.4
+pydantic-settings==2.14.2
+
+# Embedding (本地模型可选)
+sentence-transformers==3.3.1
+numpy==2.2.1
+
+# SSH (远程执行命令)
+paramiko==3.5.0
+
+# Document Parsing
+pypdf==5.1.0
+python-docx==1.1.2

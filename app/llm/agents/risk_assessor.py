@@ -22,15 +22,25 @@ RISK_ASSESSOR_PROMPT = """
   "risk_level": "read_only | safe_write | dangerous | critical",
   "requires_confirm": true/false,
   "reason": "风险评估理由",
-  "suggestions": "建议或替代方案"
+  "suggestions": "建议或替代方案",
+  "confidence": 0.0-1.0
 }
+
+confidence 说明：
+- 0.0-0.5: 不确定，需要用户确认
+- 0.5-0.8: 比较确定，但建议用户确认
+- 0.8-1.0: 非常确定，可以自动执行
+- 对于 read_only 操作，confidence 默认为 1.0
+- 对于 safe_write 操作，confidence 默认为 0.9
+- 对于 dangerous 操作，如果命令明确且安全，confidence 可以为 0.8 以上
+- 对于 critical 操作，confidence 通常为 0.0-0.3
 
 示例：
 操作: {"intent": "query", "task_type": "get", "target": "pod"}
-输出: {"risk_level": "read_only", "requires_confirm": false, "reason": "只读查询操作", "suggestions": ""}
+输出: {"risk_level": "read_only", "requires_confirm": false, "reason": "只读查询操作", "suggestions": "", "confidence": 1.0}
 
 操作: {"intent": "operate", "task_type": "delete", "target": "pod", "resource_name": "nginx-xxx"}
-输出: {"risk_level": "dangerous", "requires_confirm": true, "reason": "删除 Pod 会导致服务中断", "suggestions": "建议先确认 Pod 是否属于 Deployment 管理"}
+输出: {"risk_level": "dangerous", "requires_confirm": true, "reason": "删除 Pod 会导致服务中断", "suggestions": "建议先确认 Pod 是否属于 Deployment 管理", "confidence": 0.3}
 """
 
 

@@ -53,6 +53,11 @@ class ChatWindow(QWidget):
             try:
                 self.messages = _json.loads(raw)
                 self.messages = self.messages[-30:]
+                # 确保 cot 消息的折叠状态正确
+                for m in self.messages:
+                    if m.get("role") == "cot":
+                        m["visible_lines"] = 0
+                        m["expanded"] = False
             except Exception:
                 self.messages = []
 
@@ -63,8 +68,13 @@ class ChatWindow(QWidget):
             save = []
             for m in self.messages[-30:]:
                 m2 = dict(m)
-                m2.pop("visible_lines", None)
-                m2.pop("expanded", None)
+                # 不保存 system 消息（进度提示等），避免污染历史
+                if m2.get("role") == "system":
+                    continue
+                # cot 消息重置为折叠状态
+                if m2.get("role") == "cot":
+                    m2["visible_lines"] = 0
+                    m2["expanded"] = False
                 save.append(m2)
             self._settings.setValue(f"history/{self.user_id}", _json.dumps(save, ensure_ascii=False))
             self._settings.sync()
@@ -631,12 +641,10 @@ class ChatWindow(QWidget):
             display_msg = f"{msg}\n📎 附件：{fname}" if msg else f"📎 附件：{fname}"
 
         self.messages.append({"role": "user", "text": display_msg})
-        self.messages.append({"role": "assistant", "text": "正在思考..."})
-        self._render_history()
+        self.messages.append({"role": "assistant", "text": ""})
         self.input.clear()
         self.send_btn.setEnabled(False)
         self.input.setEnabled(False)
-        self._start_loading()
 
         file_path = self.selected_file
         self.selected_file = None
@@ -645,9 +653,13 @@ class ChatWindow(QWidget):
 
         if file_path:
             # 附件走旧接口（同步）
+            self.messages[-1]["text"] = "正在思考..."
+            self._render_history()
+            self._start_loading()
             self._send_sync(msg, file_path)
         else:
-            # 纯文本走 SSE 流式
+            # 纯文本走 SSE 流式——先渲染用户消息，再启动流式
+            self._render_history()
             self._send_stream(msg)
 
     def _send_sync(self, msg, file_path):
@@ -664,12 +676,25 @@ class ChatWindow(QWidget):
 
     def _send_stream(self, msg):
         """SSE 流式聊天"""
+        # 停止 loading 动画，避免覆盖系统消息
+        self._stop_loading()
+        # 清除"正在思考..."文本
+        self.messages[-1]["text"] = ""
+        
         self._stream_cot = {
             "role": "cot", "reasoning": "", "tool_calls": [],
             "visible_lines": 0, "expanded": False,
         }
         self._stream_answers = []
+        self._workflow_status_shown = False
         self.messages.insert(len(self.messages) - 1, self._stream_cot)
+        
+        # 立即显示进度条，不等后端返回
+        self.status_label.setText("🧠 正在分析意图...")
+        self._add_system_message("🧠 正在分析意图...")
+        # 强制处理所有待处理的事件，确保立即渲染
+        from PyQt6.QtWidgets import QApplication
+        QApplication.processEvents()
 
         self.stop_btn.setVisible(True)
         self.send_btn.setVisible(False)
@@ -683,6 +708,7 @@ class ChatWindow(QWidget):
         self.worker.event_tool_call.connect(self._on_stream_tool_call)
         self.worker.event_tool_result.connect(self._on_stream_tool_result)
         self.worker.event_command_rewritten.connect(self._on_command_rewritten)
+        self.worker.event_workflow_status.connect(self._on_workflow_status)
         self.worker.event_done.connect(self._on_stream_done)
         self.worker.event_error.connect(self._on_stream_error)
         self.worker.event_done.connect(self.thread.quit)
@@ -716,6 +742,7 @@ class ChatWindow(QWidget):
         self.send_btn.setEnabled(True)
         self.input.setEnabled(True)
         self.status_label.setText("就绪")
+        self._workflow_status_shown = False
         self._save_history()
 
     def _on_stream_reasoning(self, content: str):
@@ -750,6 +777,26 @@ class ChatWindow(QWidget):
                 tc["result"] = result[:300]; break
         self._render_history()
 
+    def _on_workflow_status(self, stage: str, message: str):
+        """工作流状态更新——在状态栏显示进度"""
+        stage_icons = {
+            "rewriter": "🔍",
+            "orchestrator": "🧠",
+            "risk_assessor": "⚠️",
+            "commander": "🔧",
+            "executor": "⚡",
+            "observer": "👁️",
+            "reporter": "📝",
+            "validator": "✅",
+        }
+        icon = stage_icons.get(stage, "⏳")
+        self.status_label.setText(f"{icon} {message}")
+        # 只在第一次收到 workflow_status 时在聊天区显示系统消息
+        # 避免频繁渲染干扰流式输出
+        if not getattr(self, "_workflow_status_shown", False):
+            self._workflow_status_shown = True
+            self._add_system_message(f"{icon} {message}")
+
     def _on_command_rewritten(self, original: str, rewritten: str):
         """问题被重写后，在聊天区显示系统消息"""
         # 截断过长的内容
@@ -770,11 +817,17 @@ class ChatWindow(QWidget):
         self._stream_cot["visible_lines"] = 0
         self._render_history()
         answer = "".join(self._stream_answers) if self._stream_answers else ""
+        # 找到 assistant 消息的索引（跳过末尾的 system 消息）
+        assistant_idx = len(self.messages) - 1
+        while assistant_idx >= 0 and self.messages[assistant_idx].get("role") != "assistant":
+            assistant_idx -= 1
+        if assistant_idx < 0:
+            assistant_idx = len(self.messages) - 1
         if answer:
-            self.messages[-1]["text"] = ""
-            self._start_streaming(answer)
+            self.messages[assistant_idx]["text"] = ""
+            self._start_streaming(answer, msg_idx=assistant_idx)
         else:
-            self.messages[-1]["text"] = "（无回答）"
+            self.messages[assistant_idx]["text"] = "（无回答）"
             self._render_history()
             self._reset_ui()
 

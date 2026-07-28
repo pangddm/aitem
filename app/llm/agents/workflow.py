@@ -240,7 +240,7 @@ class AgentWorkflow:
             yield {"type": "workflow_status", "stage": "orchestrator", "message": "正在分析意图..."}
             print("[Workflow Stream] 步骤1: Orchestrator 分析意图...")
             try:
-                orc_result = await self.orchestrator.analyze(rewritten_message)
+                orc_result = await self.orchestrator.analyze(rewritten_message, conversation_history=conversation_history)
                 task_plan = orc_result["task_plan"]
                 print(f"[Workflow Stream] task_plan: {task_plan}")
                 if orc_result["reasoning"]:
@@ -259,16 +259,29 @@ class AgentWorkflow:
                 yield {"type": "done"}
                 return
 
-            # 不需要执行（聊天/知识问答）
+            # 安全兜底：纯理论知识/概念询问，不需要执行
+            # 例如"什么是 Deployment"、"Kubernetes 是什么"等
+            # 但"显示 Pod"、"查看容器"等查询集群状态的请求需要执行
+            if (
+                task_plan.get("intent") == "query"
+                and task_plan.get("task_type") == "other"
+                and task_plan.get("target") == "unknown"
+            ):
+                task_plan["requires_execution"] = False
+
+            # 不需要执行（聊天/知识问答/查询）
             if not task_plan.get("requires_execution"):
                 yield {"type": "workflow_status", "stage": "reporter", "message": "正在生成回答..."}
                 # 使用聊天式 prompt，让回答更自然
                 chat_prompt = "你是 Kubedoctor，一个友好的 Kubernetes 运维助手。请用自然、对话式的中文回答用户的问题。不要使用报告格式，就像朋友聊天一样。如果用户问的是技术问题，给出专业但易懂的回答。"
                 if knowledge_context:
                     chat_prompt += f"\n\n参考知识库：\n{knowledge_context}"
+                if conversation_history:
+                    history_text = "\n".join([f"{'用户' if m['role'] == 'user' else '你'}: {m['content'][:200]}" for m in conversation_history[-5:]])
+                    chat_prompt += f"\n\n当前对话历史（最近5条）：\n{history_text}"
                 if memories:
                     memory_text = "\n".join([f"- {m.content}" for m in memories[:3]])
-                    chat_prompt += f"\n\n历史记忆：\n{memory_text}"
+                    chat_prompt += f"\n\n相关历史知识（来自其他对话，仅供参考，不要当作当前对话历史）：\n{memory_text}"
                 
                 has_content = False
                 async for event in self.reporter.think_stream(
@@ -335,64 +348,73 @@ class AgentWorkflow:
 
             # 3.5 交互式确认：如果风险等级需要确认，发送确认请求给前端
             # 测试模式下跳过确认
+            # 如果置信度 >= 80%，自动执行，不需要用户确认
             from app.core.config import TEST_MODE
+            confidence = risk_assessment.get("confidence", 0)
             if not TEST_MODE and risk_assessment.get("requires_confirm") and risk_assessment.get("risk_level") in ("dangerous", "critical"):
-                # 生成替代方案选项
-                suggestions = risk_assessment.get("suggestions", "")
-                confirm_options = [
-                    {"id": "execute", "label": f"✅ 确认执行: {validation.get('command', '')}", "value": "execute"},
-                ]
-                if suggestions:
-                    confirm_options.append({"id": "alternative", "label": f"💡 采用建议: {suggestions}", "value": "alternative"})
-                confirm_options.append({"id": "cancel", "label": "❌ 取消执行", "value": "cancel"})
+                # 如果置信度 >= 80%，自动执行，跳过用户确认
+                if confidence >= 0.8:
+                    yield {
+                        "type": "auto_fix",
+                        "content": f"🤖 置信度 {confidence*100:.0f}%，自动执行: {validation.get('command', '')}",
+                    }
+                else:
+                    # 生成替代方案选项
+                    suggestions = risk_assessment.get("suggestions", "")
+                    confirm_options = [
+                        {"id": "execute", "label": f"✅ 确认执行: {validation.get('command', '')}", "value": "execute"},
+                    ]
+                    if suggestions:
+                        confirm_options.append({"id": "alternative", "label": f"💡 采用建议: {suggestions}", "value": "alternative"})
+                    confirm_options.append({"id": "cancel", "label": "❌ 取消执行", "value": "cancel"})
 
-                yield {
-                    "type": "confirm_required",
-                    "risk_level": risk_assessment.get("risk_level"),
-                    "command": validation.get("command", ""),
-                    "explanation": validation.get("explanation", ""),
-                    "reason": risk_assessment.get("reason", ""),
-                    "suggestions": suggestions,
-                    "options": confirm_options,
-                }
+                    yield {
+                        "type": "confirm_required",
+                        "risk_level": risk_assessment.get("risk_level"),
+                        "command": validation.get("command", ""),
+                        "explanation": validation.get("explanation", ""),
+                        "reason": risk_assessment.get("reason", ""),
+                        "suggestions": suggestions,
+                        "options": confirm_options,
+                    }
 
-                # 等待用户确认（通过 asyncio.Event）
-                import asyncio as _asyncio
-                confirm_event = _asyncio.Event()
-                user_choice = {"value": None}
+                    # 等待用户确认（通过 asyncio.Event）
+                    import asyncio as _asyncio
+                    confirm_event = _asyncio.Event()
+                    user_choice = {"value": None}
 
-                # 将确认事件存入全局字典，供 API 层设置
-                from app.llm.agents import _pending_confirmations
-                confirm_id = id(confirm_event)
-                _pending_confirmations[confirm_id] = {
-                    "event": confirm_event,
-                    "choice": user_choice,
-                }
+                    # 将确认事件存入全局字典，供 API 层设置
+                    from app.llm.agents import _pending_confirmations
+                    confirm_id = id(confirm_event)
+                    _pending_confirmations[confirm_id] = {
+                        "event": confirm_event,
+                        "choice": user_choice,
+                    }
 
-                yield {"type": "confirm_id", "confirm_id": confirm_id}
+                    yield {"type": "confirm_id", "confirm_id": confirm_id}
 
-                # 等待用户响应（超时 120 秒）
-                try:
-                    await _asyncio.wait_for(confirm_event.wait(), timeout=120.0)
-                except _asyncio.TimeoutError:
-                    yield {"type": "answer_chunk", "content": "\n\n⏱️ 确认超时，操作已取消。"}
-                    yield {"type": "done"}
-                    return
+                    # 等待用户响应（超时 120 秒）
+                    try:
+                        await _asyncio.wait_for(confirm_event.wait(), timeout=120.0)
+                    except _asyncio.TimeoutError:
+                        yield {"type": "answer_chunk", "content": "\n\n⏱️ 确认超时，操作已取消。"}
+                        yield {"type": "done"}
+                        return
 
-                # 清理
-                _pending_confirmations.pop(confirm_id, None)
+                    # 清理
+                    _pending_confirmations.pop(confirm_id, None)
 
-                choice = user_choice["value"]
-                if choice == "cancel":
-                    yield {"type": "answer_chunk", "content": "❌ 操作已取消。"}
-                    yield {"type": "done"}
-                    return
-                elif choice == "alternative" and suggestions:
-                    # 使用建议作为新命令
-                    yield {"type": "answer_chunk", "content": f"💡 采用建议方案，请重新描述您的需求。"}
-                    yield {"type": "done"}
-                    return
-                # choice == "execute" → 继续执行
+                    choice = user_choice["value"]
+                    if choice == "cancel":
+                        yield {"type": "answer_chunk", "content": "❌ 操作已取消。"}
+                        yield {"type": "done"}
+                        return
+                    elif choice == "alternative" and suggestions:
+                        # 使用建议作为新命令
+                        yield {"type": "answer_chunk", "content": f"💡 采用建议方案，请重新描述您的需求。"}
+                        yield {"type": "done"}
+                        return
+                    # choice == "execute" → 继续执行
 
             # 4. 执行 + 观察 + 反馈循环（持续直到问题解决）
             MAX_ITERATIONS = int(os.getenv("MAX_AGENT_ITERATIONS", "10"))
@@ -445,6 +467,12 @@ class AgentWorkflow:
                     yield {"type": "workflow_status", "stage": "resolved", "message": "✅ 问题已解决！"}
                     break
 
+                # 纯查询操作（intent=query），即使发现异常也不进入修复循环
+                # 用户只是想查看状态，不是要诊断或修复问题
+                if task_plan.get("intent") == "query":
+                    yield {"type": "workflow_status", "stage": "query_complete", "message": "📋 查询完成，正在生成报告..."}
+                    break
+
                 # 如果问题未解决，尝试自动生成修复方案
                 yield {"type": "workflow_status", "stage": "planning_next", "message": "🔄 问题未解决，正在分析下一步..."}
 
@@ -459,17 +487,18 @@ class AgentWorkflow:
                 )
 
                 if fix_options and len(fix_options) >= 1:
-                    # 如果只有一个明确方案，自动执行
-                    if len(fix_options) == 1 and fix_options[0].get("confidence", 0) >= 0.8:
-                        chosen = fix_options[0]
-                        yield {"type": "auto_fix", "content": f"🤖 自动执行: {chosen.get('description', '')}"}
+                    # 检查是否有任意方案置信度 >= 80%，自动选择最高置信度的方案
+                    best_option = max(fix_options, key=lambda x: x.get("confidence", 0))
+                    if best_option.get("confidence", 0) >= 0.8:
+                        chosen = best_option
+                        yield {"type": "auto_fix", "content": f"🤖 置信度 {chosen.get('confidence', 0)*100:.0f}%，自动执行: {chosen.get('description', '')}"}
                         validation["command"] = chosen.get("command", "")
                         validation["explanation"] = chosen.get("description", "")
                         # 更新 task_plan 以反映新的诊断方向
                         task_plan["description"] = chosen.get("description", task_plan.get("description", ""))
                         continue
 
-                    # 多个方案或不确定 → 让用户选择
+                    # 所有方案置信度都 < 80% → 让用户选择
                     options = []
                     for i, opt in enumerate(fix_options[:3]):  # 最多 3 个选项
                         options.append({
@@ -512,7 +541,15 @@ class AgentWorkflow:
                     _pending_confirmations.pop(choice_id, None)
                     chosen_option = user_choice["value"]
 
-                    if chosen_option and chosen_option.startswith("option_"):
+                    if chosen_option == "cancel":
+                        yield {"type": "answer_chunk", "content": "❌ 已取消操作，正在生成诊断报告..."}
+                        # 跳转到 Reporter 生成报告
+                        break
+                    elif chosen_option == "skip":
+                        yield {"type": "answer_chunk", "content": "⏭️ 已跳过，正在生成诊断报告..."}
+                        # 跳转到 Reporter 生成报告
+                        break
+                    elif chosen_option and chosen_option.startswith("option_"):
                         idx = int(chosen_option.split("_")[1])
                         if idx < len(options):
                             chosen = options[idx]

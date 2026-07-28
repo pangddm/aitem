@@ -758,13 +758,64 @@ const App = {
       // 如果有思考链数据，渲染思考链
       if (msg.thinking_chain && msg.thinking_chain.length > 0) {
         const contentEl = el.querySelector(".message-content");
+        const answerArea = contentEl.querySelector(".answer-area");
+        
+        // 先收集所有思考链块
+        const blocks = [];
         msg.thinking_chain.forEach((tc) => {
           const item = this.mapThinkingChainItem(tc);
-          this.renderThinkingBlock(contentEl, item.cls, item.title, item.content);
+          const block = document.createElement("div");
+          block.className = `event-block ${item.cls} completed`;
+          const titleEl = document.createElement("div");
+          titleEl.className = "event-title";
+          titleEl.innerHTML = `<span>${item.title}</span><span class="event-status">✓</span>`;
+          block.appendChild(titleEl);
+          const contentDiv = document.createElement("div");
+          contentDiv.className = "event-content collapsed";
+          const textDiv = document.createElement("div");
+          textDiv.className = "event-text";
+          textDiv.dataset.raw = item.content || "";
+          textDiv.innerHTML = this.formatThinkingContent(item.content || "");
+          contentDiv.appendChild(textDiv);
+          block.appendChild(contentDiv);
+          titleEl.addEventListener("click", () => {
+            contentDiv.classList.toggle("collapsed");
+          });
+          blocks.push(block);
         });
+        
+        // 创建大折叠容器
+        const wrapper = document.createElement("div");
+        wrapper.className = "event-block thinking-chain completed";
+        const wrapperTitle = document.createElement("div");
+        wrapperTitle.className = "event-title";
+        wrapperTitle.innerHTML = `<span>💭 思考链</span><span class="event-status">✓</span>`;
+        wrapper.appendChild(wrapperTitle);
+        const wrapperContent = document.createElement("div");
+        wrapperContent.className = "event-content";
+        const innerContainer = document.createElement("div");
+        innerContainer.className = "thinking-chain-inner";
+        blocks.forEach((block) => {
+          innerContainer.appendChild(block);
+        });
+        wrapperContent.appendChild(innerContainer);
+        wrapper.appendChild(wrapperContent);
+        wrapperTitle.addEventListener("click", () => {
+          wrapperContent.classList.toggle("collapsed");
+        });
+        
+        // 将大折叠容器插入到 answer-area 之前
+        if (answerArea) {
+          contentEl.insertBefore(wrapper, answerArea);
+        } else {
+          contentEl.prepend(wrapper);
+        }
       }
     });
-    this.scrollToBottom();
+    // 使用 requestAnimationFrame 确保 DOM 渲染完成后再滚动到底部
+    requestAnimationFrame(() => {
+      this.scrollToBottom();
+    });
   },
 
   createMessageEl(role, content) {
@@ -778,9 +829,19 @@ const App = {
       <div class="message-avatar">${this.escapeHtml(avatar)}</div>
       <div class="message-body">
         <div class="message-role">${roleLabel}</div>
-        <div class="message-content">${this.renderMarkdown(content)}</div>
+        <div class="message-content"></div>
       </div>
     `;
+    const contentEl = div.querySelector(".message-content");
+    if (role === "assistant") {
+      // assistant 消息：先添加 answer-area，思考链块会在 renderMessages 中插入到 answer-area 前面
+      const answerArea = document.createElement("div");
+      answerArea.className = "answer-area";
+      answerArea.innerHTML = this.renderMarkdown(content);
+      contentEl.appendChild(answerArea);
+    } else {
+      contentEl.innerHTML = this.renderMarkdown(content);
+    }
     return div;
   },
 
@@ -814,7 +875,36 @@ const App = {
     // 创建助手消息占位
     const assistantEl = this.createMessageEl("assistant", "");
     const contentEl = assistantEl.querySelector(".message-content");
-    contentEl.classList.add("typing-cursor");
+    // 立即添加一个空的思考链容器（折叠状态），让用户知道 AI 正在思考
+    const thinkingWrapper = document.createElement("div");
+    thinkingWrapper.className = "event-block thinking-chain animating";
+    thinkingWrapper.innerHTML = `
+      <div class="event-title">
+        <span>💭 思考链</span>
+        <span class="event-status">⏳</span>
+      </div>
+      <div class="event-content">
+        <div class="thinking-chain-inner"></div>
+      </div>
+    `;
+    const answerArea = contentEl.querySelector(".answer-area");
+    if (answerArea) {
+      contentEl.insertBefore(thinkingWrapper, answerArea);
+    } else {
+      contentEl.appendChild(thinkingWrapper);
+    }
+    // 点击标题切换折叠
+    const thinkingTitle = thinkingWrapper.querySelector(".event-title");
+    const thinkingContent = thinkingWrapper.querySelector(".event-content");
+    thinkingTitle.addEventListener("click", () => {
+      thinkingContent.classList.toggle("collapsed");
+    });
+    // 将 typing-cursor 加到 answer-area 上
+    if (answerArea) {
+      answerArea.classList.add("typing-cursor");
+    } else {
+      contentEl.classList.add("typing-cursor");
+    }
     this.el.chatMessages.appendChild(assistantEl);
     this.scrollToBottom();
 
@@ -827,6 +917,8 @@ const App = {
     let thinkingQueue = [];
     let thinkingTimer = null;
     let thinkingChain = [];  // 收集思考链数据用于持久化
+    // 将 thinkingChain 绑定到 handleStreamEvent 可访问的位置
+    this._thinkingChain = thinkingChain;
 
     let fullAnswer = "";
     try {
@@ -880,6 +972,11 @@ const App = {
         }
       }
     } finally {
+      // 移除 typing-cursor（可能在 answer-area 或 message-content 上）
+      const answerArea = contentEl.querySelector(".answer-area");
+      if (answerArea) {
+        answerArea.classList.remove("typing-cursor");
+      }
       contentEl.classList.remove("typing-cursor");
       this.state.streaming = false;
       this.toggleStreamingUI(false);
@@ -922,7 +1019,7 @@ const App = {
     if (type === "retry_loop") {
       const title = `🔄 第${evt.loop}次重试`;
       this.appendThinkingBlock(contentEl, "retry", title, evt.reason || "Observer 建议重试");
-      thinkingChain.push({ cls: "retry", title, content: evt.reason || "Observer 建议重试" });
+      if (this._thinkingChain) this._thinkingChain.push({ cls: "retry", title, content: evt.reason || "Observer 建议重试" });
       return;
     }
 
@@ -956,7 +1053,7 @@ const App = {
       const agentLabel = agentLabelMap[agentName] || agentName;
       const title = `💭 ${this.t("thinking")} · ${agentLabel}`;
       this.appendThinkingBlock(contentEl, "thought", title, content);
-      thinkingChain.push({ cls: "thought", title, content });
+      if (this._thinkingChain) this._thinkingChain.push({ cls: "thought", title, content });
       return;
     }
 
@@ -965,7 +1062,7 @@ const App = {
       const text = typeof content === "string" ? content : JSON.stringify(content, null, 2);
       const title = `📋 ${this.t("taskPlan")}`;
       this.appendThinkingBlock(contentEl, "plan", title, text);
-      thinkingChain.push({ cls: "plan", title, content: text });
+      if (this._thinkingChain) this._thinkingChain.push({ cls: "plan", title, content: text });
       return;
     }
 
@@ -974,7 +1071,7 @@ const App = {
       const text = typeof content === "string" ? content : JSON.stringify(content, null, 2);
       const title = `⚠️ ${this.t("riskAssess")}`;
       this.appendThinkingBlock(contentEl, "risk", title, text);
-      thinkingChain.push({ cls: "risk", title, content: text });
+      if (this._thinkingChain) this._thinkingChain.push({ cls: "risk", title, content: text });
       return;
     }
 
@@ -983,7 +1080,7 @@ const App = {
       const text = typeof content === "string" ? content : JSON.stringify(content, null, 2);
       const title = `✅ ${this.t("cmdValidate")}`;
       this.appendThinkingBlock(contentEl, "validation", title, text);
-      thinkingChain.push({ cls: "validation", title, content: text });
+      if (this._thinkingChain) this._thinkingChain.push({ cls: "validation", title, content: text });
       return;
     }
 
@@ -992,7 +1089,7 @@ const App = {
       const cmd = evt.command || content;
       const title = `🔧 ${this.t("execCmd")} (${evt.tool || "execute_command"})`;
       this.appendThinkingBlock(contentEl, "tool", title, cmd);
-      thinkingChain.push({ cls: "tool", title, content: cmd });
+      if (this._thinkingChain) this._thinkingChain.push({ cls: "tool", title, content: cmd });
       return;
     }
 
@@ -1000,7 +1097,7 @@ const App = {
     if (type === "tool_result") {
       const title = `📋 ${this.t("execResult")}`;
       this.appendThinkingBlock(contentEl, "tool", title, content);
-      thinkingChain.push({ cls: "tool", title, content });
+      if (this._thinkingChain) this._thinkingChain.push({ cls: "tool", title, content });
       return;
     }
 
@@ -1009,7 +1106,7 @@ const App = {
       const text = typeof content === "string" ? content : JSON.stringify(content, null, 2);
       const title = `👁️ ${this.t("resultObs")}`;
       this.appendThinkingBlock(contentEl, "observation", title, text);
-      thinkingChain.push({ cls: "observation", title, content: text });
+      if (this._thinkingChain) this._thinkingChain.push({ cls: "observation", title, content: text });
       return;
     }
 
@@ -1017,7 +1114,7 @@ const App = {
     if (type === "auto_fix") {
       const title = `🤖 ${this.t("autoFix") || "自动修复"}`;
       this.appendThinkingBlock(contentEl, "auto-fix", title, content);
-      thinkingChain.push({ cls: "auto-fix", title, content });
+      if (this._thinkingChain) this._thinkingChain.push({ cls: "auto-fix", title, content });
       return;
     }
 
@@ -1025,7 +1122,7 @@ const App = {
     if (type === "user_choice_applied") {
       const title = `✅ ${this.t("choiceApplied") || "已选择方案"}`;
       this.appendThinkingBlock(contentEl, "choice-applied", title, content);
-      thinkingChain.push({ cls: "choice-applied", title, content });
+      if (this._thinkingChain) this._thinkingChain.push({ cls: "choice-applied", title, content });
       return;
     }
 
@@ -1233,12 +1330,18 @@ const App = {
     contentDiv.appendChild(textDiv);
     block.appendChild(contentDiv);
 
-    // 插入到 answer-area 之前（如果有的话）
-    const answerArea = contentEl.querySelector(".answer-area");
-    if (answerArea) {
-      contentEl.insertBefore(block, answerArea);
+    // 如果存在 thinking-chain wrapper，将新块插入到其内部的 thinking-chain-inner 中
+    const thinkingChain = contentEl.querySelector(".thinking-chain .thinking-chain-inner");
+    if (thinkingChain) {
+      thinkingChain.appendChild(block);
     } else {
-      contentEl.appendChild(block);
+      // 否则插入到 answer-area 之前（如果有的话）
+      const answerArea = contentEl.querySelector(".answer-area");
+      if (answerArea) {
+        contentEl.insertBefore(block, answerArea);
+      } else {
+        contentEl.appendChild(block);
+      }
     }
 
     this.scrollToBottom();
@@ -1315,12 +1418,12 @@ const App = {
     contentDiv.appendChild(textDiv);
     block.appendChild(contentDiv);
 
-    // 插入到 answer-area 之前（如果有的话）
+    // 插入到 contentEl 的最前面（answer-area 之前）
     const answerArea = contentEl.querySelector(".answer-area");
     if (answerArea) {
       contentEl.insertBefore(block, answerArea);
     } else {
-      contentEl.appendChild(block);
+      contentEl.prepend(block);
     }
 
     // 点击标题切换折叠
@@ -1330,15 +1433,20 @@ const App = {
   },
 
   /**
-   * 流结束后折叠所有思考链块
+   * 流结束后折叠所有思考链块，合并成一个大的可折叠组
+   * 大块展开后，里面是每个独立的小思考块（保持可折叠功能）
    */
   collapseAllThinkingBlocks(contentEl) {
+    // 防重复：如果已经合并过了，不再处理
+    if (contentEl.querySelector(".thinking-chain")) return;
+
     const allBlocks = contentEl.querySelectorAll(".event-block");
+    if (allBlocks.length === 0) return;
+
+    // 先折叠所有块，取消定时器
     allBlocks.forEach((block) => {
       const contentDiv = block.querySelector(".event-content");
-      if (contentDiv && !contentDiv.classList.contains("collapsed")) {
-        contentDiv.classList.add("collapsed");
-      }
+      if (contentDiv) contentDiv.classList.add("collapsed");
       block.classList.remove("animating");
       block.classList.add("completed");
       const statusEl = block.querySelector(".event-status");
@@ -1348,6 +1456,41 @@ const App = {
         block._collapseTimer = null;
       }
     });
+
+    // 创建一个大的包裹容器
+    const wrapper = document.createElement("div");
+    wrapper.className = "event-block thinking-chain completed";
+
+    const titleEl = document.createElement("div");
+    titleEl.className = "event-title";
+    titleEl.innerHTML = `<span>💭 思考链</span><span class="event-status">✓</span>`;
+    wrapper.appendChild(titleEl);
+
+    const contentDiv = document.createElement("div");
+    contentDiv.className = "event-content collapsed";
+
+    // 将所有小思考块移入大块内部
+    const container = document.createElement("div");
+    container.className = "thinking-chain-inner";
+    allBlocks.forEach((block) => {
+      container.appendChild(block);
+    });
+    contentDiv.appendChild(container);
+    wrapper.appendChild(contentDiv);
+
+    // 插入到 answer-area 之前
+    const answerArea = contentEl.querySelector(".answer-area");
+    if (answerArea) {
+      contentEl.insertBefore(wrapper, answerArea);
+    } else {
+      contentEl.appendChild(wrapper);
+    }
+
+    // 点击标题切换折叠
+    titleEl.addEventListener("click", () => {
+      contentDiv.classList.toggle("collapsed");
+    });
+
     // 折叠/隐藏工作流进度条
     const progressBar = contentEl.querySelector(".workflow-progress");
     if (progressBar) {
@@ -1418,9 +1561,9 @@ const App = {
     });
     html += `</div>`;
 
-    // 添加跳过按钮
+    // 添加跳过和取消按钮
     html += `
-      <div style="margin-top:12px;text-align:center">
+      <div style="margin-top:12px;display:flex;gap:8px;justify-content:center">
         <button class="fix-option-btn" data-choice="skip" style="
           padding:8px 16px;
           border:1px solid var(--border);
@@ -1429,7 +1572,16 @@ const App = {
           color:var(--text-tertiary);
           cursor:pointer;
           font-size:12px;
-        ">⏭️ ${this.t("skip") || "跳过，直接生成报告"}</button>
+        ">⏭️ 跳过</button>
+        <button class="fix-option-btn" data-choice="cancel" style="
+          padding:8px 16px;
+          border:1px solid #ef4444;
+          border-radius:6px;
+          background:transparent;
+          color:#ef4444;
+          cursor:pointer;
+          font-size:12px;
+        ">❌ 取消</button>
       </div>
     `;
 
@@ -1456,6 +1608,8 @@ const App = {
         // 更新对话框状态
         if (choice === "skip") {
           dialog.innerHTML = `<div style="text-align:center;padding:8px;color:var(--text-tertiary);font-size:13px">⏭️ 已跳过，正在生成报告...</div>`;
+        } else if (choice === "cancel") {
+          dialog.innerHTML = `<div style="text-align:center;padding:8px;color:#ef4444;font-size:13px">❌ 已取消，正在生成报告...</div>`;
         } else {
           dialog.innerHTML = `<div style="text-align:center;padding:8px;color:var(--text-tertiary);font-size:13px">✓ 已选择方案，正在执行...</div>`;
         }

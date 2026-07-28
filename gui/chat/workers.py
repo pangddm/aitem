@@ -39,6 +39,7 @@ class StreamChatWorker(QObject):
     event_tool_call = pyqtSignal(str, str)
     event_tool_result = pyqtSignal(str, str)
     event_command_rewritten = pyqtSignal(str, str)  # original, rewritten
+    event_workflow_status = pyqtSignal(str, str)  # stage, message
     event_done = pyqtSignal()
     event_error = pyqtSignal(str)
 
@@ -78,6 +79,11 @@ class StreamChatWorker(QObject):
                     self.event_tool_call.emit(event.get("tool", "?"), event.get("command", ""))
                 elif etype == "tool_result":
                     self.event_tool_result.emit(event.get("tool", "?"), event.get("result", ""))
+                elif etype == "workflow_status":
+                    self.event_workflow_status.emit(
+                        event.get("stage", ""),
+                        event.get("message", ""),
+                    )
                 elif etype == "done":
                     self.event_done.emit()
                     return

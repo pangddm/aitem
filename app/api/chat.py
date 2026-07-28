@@ -139,6 +139,9 @@ async def chat_stream(
                     conversation_history = all_msgs[-10:] if len(all_msgs) > 10 else all_msgs
             except Exception:
                 pass
+        
+        # 新对话不应该有跨对话历史，保持 conversation_history 为空
+        # （旧代码从 SessionMemory 获取跨对话历史，导致新对话有旧对话记忆的 bug）
 
         # 发送 conv_id 给前端
         yield f"data: {_json.dumps({'type': 'conv_created', 'conv_id': actual_conv_id}, ensure_ascii=False)}\n\n"
@@ -156,6 +159,7 @@ async def chat_stream(
                 port=port,
                 username=ssh_user,
                 password=ssh_pass,
+                conversation_history=conversation_history,
             ):
                 ct = event.get("content", "")
                 if event.get("type") == "answer_chunk" and ct:
@@ -207,17 +211,8 @@ async def chat_stream(
                     )
             except Exception:
                 pass
-            # 同时保持 SessionMemory 兼容
-            try:
-                from app.memory.short_term import SessionMemory
-                sm = SessionMemory()
-                history = sm.load(user_id)
-                history.append({"role": "user", "content": message})
-                if full_answer:
-                    history.append({"role": "assistant", "content": full_answer})
-                sm.save(user_id, history)
-            except Exception:
-                pass
+            # 不再保存到 SessionMemory，避免跨对话污染
+            # 对话历史已通过 conv_msgs:{actual_conv_id} 按对话隔离
 
             # 自动学习：后台沉淀知识
             if auto_learn_data["task_plan"] and auto_learn_data["execution_result"] and auto_learn_data["observation"]:
