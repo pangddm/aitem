@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from uuid import UUID
 
 import asyncpg
 
@@ -64,7 +65,7 @@ class DocumentRepository:
                 )
                 """,
                 document.id,
-                document.owner,
+                UUID(document.owner),
                 document.kb_id,
 
                 document.filename,
@@ -102,7 +103,7 @@ class DocumentRepository:
                   AND content_hash=$2
                 LIMIT 1
                 """,
-                owner,
+                UUID(owner),
                 content_hash,
             )
 
@@ -158,6 +159,32 @@ class DocumentRepository:
             self._convert(row)
             for row in rows
         ]
+
+    async def update_progress(
+        self,
+        document_id: str,
+        status: DocumentStatus,
+        metadata: dict,
+    ) -> None:
+        """更新文档的处理状态与进度快照（stage/pct/error 等，供前端恢复进度）"""
+
+        async with self.pool.acquire() as conn:
+
+            await conn.execute(
+                """
+                UPDATE document
+
+                SET parse_status=$2,
+                    metadata=$3,
+                    updated_at=$4
+
+                WHERE id=$1
+                """,
+                document_id,
+                status.value,
+                metadata,
+                datetime.utcnow(),
+            )
 
     async def update_status(
         self,

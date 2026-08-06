@@ -12,6 +12,7 @@ from app.knowledge.models import (
 from app.prompt.knowledge_prompt import (
     EXTRACT_INCIDENT_PROMPT,
 )
+from app.core.config import EXTRACT_MODEL
 
 
 class IncidentExtractor:
@@ -31,7 +32,7 @@ class IncidentExtractor:
         document_id: str,
 
         text: str,
-        owner: str = "default",
+        owner: str,
 
     ) -> list[Incident]:
 
@@ -91,7 +92,7 @@ class IncidentExtractor:
 
                     source=IncidentSource.UPLOAD,
 
-                    category=KnowledgeCategory(
+                    category=self._parse_category(
                         item.get("category", "doc")
                     ),
 
@@ -140,7 +141,7 @@ class IncidentExtractor:
 
         try:
             response = await self.client.chat.completions.create(
-                model="deepseek-v4-flash",
+                model=EXTRACT_MODEL,
                 messages=[
                     {"role": "system", "content": EXTRACT_INCIDENT_PROMPT},
                     {"role": "user", "content": text},
@@ -157,6 +158,22 @@ class IncidentExtractor:
             pass
 
         return None
+
+    @staticmethod
+    def _parse_category(value: str) -> KnowledgeCategory:
+        """解析 category，兼容旧值（deployment/pod/service/network/storage/other）"""
+        legacy_map = {
+            "deployment": KnowledgeCategory.CHANGE,
+            "pod": KnowledgeCategory.FAULT,
+            "service": KnowledgeCategory.FAULT,
+            "network": KnowledgeCategory.FAULT,
+            "storage": KnowledgeCategory.FAULT,
+            "other": KnowledgeCategory.DOC,
+        }
+        try:
+            return KnowledgeCategory(value)
+        except ValueError:
+            return legacy_map.get(value, KnowledgeCategory.DOC)
 
     @staticmethod
     def _build_fallback(

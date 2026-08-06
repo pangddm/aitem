@@ -103,7 +103,7 @@ class KnowledgeIngestionService:
         self,
         kb_id: str,
         file_path: str,
-        owner: str = "default",
+        owner: str,
         source: str = "upload",
         document_id: str | None = None,
     ):
@@ -156,14 +156,25 @@ class KnowledgeIngestionService:
             content_hash=content_hash,
         )
         if existing is not None:
-            progress_tracker.update(
-                document_id, stage=IngestStage.DUPLICATE,
-                message="已存在，跳过", pct=100,
-            )
-            # 已存在，直接返回已有文档的 incidents
-            return await self.incident_repository.list_by_document(
-                existing.id
-            )
+            # 仅当该文档已成功入库（completed）时才视为“重复”，直接复用其知识
+            if existing.parse_status == DocumentStatus.COMPLETED:
+                progress_tracker.update(
+                    document_id, stage=IngestStage.DUPLICATE,
+                    message="已存在，跳过", pct=100,
+                )
+                # 已存在且成功入库，直接返回已有文档的 incidents
+                return await self.incident_repository.list_by_document(
+                    existing.id
+                )
+            # 已存在但是失败/中断的残留记录 → 不是真重复。
+            # 清理该残留（否则每次上传都会“假重复”，RAG 里却永远没有该文件的知识），
+            # 然后重新入库。
+            if existing.parse_status in (
+                DocumentStatus.FAILED,
+                DocumentStatus.PENDING,
+            ):
+                await self.incident_repository.delete_by_document(existing.id)
+                await self.document_repository.delete(existing.id)
         # ── 去重结束 ──
 
         now = datetime.utcnow()
@@ -184,9 +195,9 @@ class KnowledgeIngestionService:
 
             source=source,
 
-            origin_text=loaded.text,
+            origin_text="",
 
-            ocr_text=cleaned_text,
+            ocr_text="",
 
             content_hash=content_hash,
 
@@ -207,6 +218,7 @@ class KnowledgeIngestionService:
             document_id, stage=IngestStage.EXTRACTING,
             message="LLM 提取知识中...", pct=30,
         )
+        await self._persist_progress(document_id, IngestStage.EXTRACTING, 30, "LLM 提取知识中...")
 
         # 整文交给 LLM 提取
         # 只有超大文档（>40000 字符）才分片，避免超出 LLM 上下文
@@ -251,6 +263,7 @@ class KnowledgeIngestionService:
                 document_id, stage=IngestStage.EMBEDDING,
                 message=f"向量化 {len(all_incidents)} 条知识...", pct=60,
             )
+            await self._persist_progress(document_id, IngestStage.EMBEDDING, 60, f"向量化 {len(all_incidents)} 条知识...")
 
             # 批量 embedding（一次 API 调用）
             embedding_texts = [
@@ -278,6 +291,7 @@ class KnowledgeIngestionService:
                 document_id, stage=IngestStage.STORING,
                 message="写入数据库...", pct=85,
             )
+            await self._persist_progress(document_id, IngestStage.STORING, 85, "写入数据库...")
 
             for incident, embedding in zip(
                 all_incidents,
@@ -305,15 +319,46 @@ class KnowledgeIngestionService:
             message=f"完成，提取 {len(all_incidents)} 条知识",
             pct=100, incident_count=len(all_incidents),
         )
+        await self._persist_progress(document_id, IngestStage.DONE, 100, f"完成，提取 {len(all_incidents)} 条知识", len(all_incidents))
 
         return all_incidents
+
+    async def _persist_progress(
+        self,
+        document_id: str,
+        stage,
+        pct: int,
+        message: str,
+        incident_count: int = 0,
+    ) -> None:
+        """把进度持久化到 DB，前端重新打开界面后仍能恢复进度显示"""
+        if stage == IngestStage.FAILED:
+            status = DocumentStatus.FAILED
+        elif stage == IngestStage.DONE:
+            status = DocumentStatus.COMPLETED
+        else:
+            status = DocumentStatus.PROCESSING
+        try:
+            await self.document_repository.update_progress(
+                document_id,
+                status,
+                {
+                    "stage": stage.value,
+                    "pct": pct,
+                    "message": message,
+                    "error": None,
+                    "incident_count": incident_count,
+                },
+            )
+        except Exception:
+            pass
 
     async def ingest_text(
         self,
         kb_id: str,
         filename: str,
         text: str,
-        owner: str = "default",
+        owner: str,
         source: str = "manual",
     ):
         """
@@ -367,9 +412,9 @@ class KnowledgeIngestionService:
 
             source=source,
 
-            origin_text=text,
+            origin_text="",
 
-            ocr_text=cleaned,
+            ocr_text="",
 
             content_hash=content_hash,
 

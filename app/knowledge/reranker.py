@@ -4,6 +4,7 @@ import json
 
 from app.knowledge.models import Incident
 from app.prompt.knowledge_prompt import RERANK_PROMPT
+from app.core.config import RAG_RERANK_TOP_K, RERANK_MODEL
 
 
 class Reranker:
@@ -11,7 +12,7 @@ class Reranker:
     def __init__(
         self,
         llm_client,
-        model: str = "deepseek-v4-flash",
+        model: str = RERANK_MODEL,
     ):
         self.client = llm_client
         self.model = model
@@ -20,7 +21,7 @@ class Reranker:
         self,
         query: str,
         incidents: list[Incident],
-        top_k: int = 3,
+        top_k: int = RAG_RERANK_TOP_K,
     ) -> list[Incident]:
 
         if not incidents:
@@ -44,29 +45,33 @@ class Reranker:
                 }
             )
 
-        response = await self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": RERANK_PROMPT,
-                },
-                {
-                    "role": "user",
-                    "content": json.dumps(
-                        {
-                            "query": query,
-                            "cases": cases,
-                            "top_k": top_k,
-                        },
-                        ensure_ascii=False,
-                    ),
-                },
-            ],
-            temperature=0,
-        )
-
-        content = response.choices[0].message.content.strip()
+        # 精排调用大模型可能失败/超时，失败时回退到原始候选，避免整条 RAG 检索变空
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": RERANK_PROMPT,
+                    },
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            {
+                                "query": query,
+                                "cases": cases,
+                                "top_k": top_k,
+                            },
+                            ensure_ascii=False,
+                        ),
+                    },
+                ],
+                temperature=0,
+            )
+            content = response.choices[0].message.content.strip()
+        except Exception as e:
+            print(f"[Reranker] 精排调用失败，回退到原始候选: {type(e).__name__}: {e}")
+            return incidents[:top_k]
 
         try:
 

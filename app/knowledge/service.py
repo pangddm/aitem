@@ -3,6 +3,7 @@ from __future__ import annotations
 from app.knowledge.ingestion import KnowledgeIngestionService
 from app.knowledge.models import Incident
 from app.knowledge.retriever import Retriever
+from app.core.config import RAG_RERANK_TOP_K
 
 
 class KnowledgeService:
@@ -23,7 +24,7 @@ class KnowledgeService:
         self,
         kb_id: str,
         file_path: str,
-        owner: str = "default",
+        owner: str,
         document_id: str | None = None,
     ):
 
@@ -43,7 +44,7 @@ class KnowledgeService:
         kb_id: str,
         filename: str,
         text: str,
-        owner: str = "default",
+        owner: str,
     ):
 
         return await self.ingestion_service.ingest_text(
@@ -61,7 +62,7 @@ class KnowledgeService:
         self,
         kb_id: str,
         query: str,
-        top_k: int = 3,
+        top_k: int = RAG_RERANK_TOP_K,
     ) -> list[Incident]:
 
         return await self.retriever.retrieve(
@@ -78,7 +79,7 @@ class KnowledgeService:
         self,
         kb_id: str,
         query: str,
-        top_k: int = 3,
+        top_k: int = RAG_RERANK_TOP_K,
     ) -> str:
 
         incidents = await self.retrieve(

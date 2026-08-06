@@ -28,6 +28,10 @@ router = APIRouter(
 UPLOAD_DIR = "./data/uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
+# 后台任务强引用集合：持有 asyncio 任务引用，防止被 GC 提前回收导致上传中断
+_bg_tasks: set = set()
+_bg_task_map: dict = {}  # document_id -> asyncio.Task，用于取消指定上传
+
 # ══════════════════════════════════════════════════════════
 #  知识库 CRUD
 # ══════════════════════════════════════════════════════════
@@ -40,6 +44,28 @@ async def create_knowledge_base(
     description: str | None = Form(None),
 ):
     """创建知识库"""
+    from uuid import UUID
+    # 验证 owner 是有效的 UUID
+    try:
+        UUID(owner)
+    except (ValueError, TypeError):
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "message": "用户 ID 无效，请重新登录"},
+        )
+
+    # 验证用户存在于 app_user 表中
+    from app.db.postgres import postgres
+    async with postgres.pool.acquire() as conn:
+        user_exists = await conn.fetchval(
+            "SELECT 1 FROM app_user WHERE id=$1", owner
+        )
+    if not user_exists:
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "message": "用户不存在，请重新注册"},
+        )
+
     now = datetime.utcnow()
     kb = KnowledgeBase(
         id=str(uuid4()),
@@ -59,7 +85,19 @@ async def list_knowledge_bases(
 ):
     """列出用户的所有知识库"""
     kbs = await knowledge_factory.kb_repository.list_by_owner(owner)
-    return {"success": True, "data": kbs}
+    data = [
+        {
+            "id": kb.id,
+            "owner": str(kb.owner) if kb.owner else None,
+            "name": kb.name,
+            "description": kb.description,
+            "is_public": kb.is_public,
+            "created_at": kb.created_at.isoformat() if kb.created_at else None,
+            "updated_at": kb.updated_at.isoformat() if kb.updated_at else None,
+        }
+        for kb in kbs
+    ]
+    return {"success": True, "data": data}
 
 
 @router.get("/kb/{kb_id}")
@@ -71,7 +109,16 @@ async def get_knowledge_base(kb_id: str):
             status_code=404,
             content={"success": False, "message": "知识库不存在"},
         )
-    return {"success": True, "data": kb}
+    data = {
+        "id": kb.id,
+        "owner": str(kb.owner) if kb.owner else None,
+        "name": kb.name,
+        "description": kb.description,
+        "is_public": kb.is_public,
+        "created_at": kb.created_at.isoformat() if kb.created_at else None,
+        "updated_at": kb.updated_at.isoformat() if kb.updated_at else None,
+    }
+    return {"success": True, "data": data}
 
 
 @router.put("/kb/{kb_id}")
@@ -131,8 +178,8 @@ async def upload_document(
     with open(file_path, "wb") as f:
         f.write(content)
 
-    # 后台异步处理（不阻塞 HTTP 响应）
-    _asyncio.create_task(
+    # 后台异步处理（不阻塞 HTTP 响应），并强引用任务防止被 GC 回收
+    task = _asyncio.create_task(
         _process_upload_bg(
             kb_id=kb_id,
             owner=owner,
@@ -140,6 +187,10 @@ async def upload_document(
             document_id=document_id,
         )
     )
+    _bg_tasks.add(task)
+    _bg_task_map[document_id] = task
+    task.add_done_callback(_bg_tasks.discard)
+    task.add_done_callback(lambda _t, _d=document_id: _bg_task_map.pop(_d, None))
 
     return {
         "success": True,
@@ -156,8 +207,10 @@ async def _process_upload_bg(
     document_id: str,
 ):
     """后台处理上传的文件"""
+    import os
     from app.knowledge.ingestion import progress_tracker, IngestStage
     from app.knowledge.models import DocumentStatus
+    from app.core.config import KEEP_RAW_FILE
 
     try:
         await knowledge_factory.service.upload_document(
@@ -173,14 +226,28 @@ async def _process_upload_bg(
             stage=IngestStage.FAILED,
             message=str(e)[:500],
         )
-        # 同步更新 DB 状态，防止重启后残留 PROCESSING
+        # 同步更新 DB 状态与进度快照，防止重启后残留 PROCESSING
         try:
-            await knowledge_factory.document_repository.update_status(
+            await knowledge_factory.document_repository.update_progress(
                 document_id,
                 DocumentStatus.FAILED,
+                {
+                    "stage": "failed",
+                    "pct": 0,
+                    "message": str(e)[:500],
+                    "error": str(e)[:500],
+                    "incident_count": 0,
+                },
             )
         except Exception:
             pass
+    finally:
+        # 入库完成后默认删除原始文件，避免占用磁盘；如需保留可设 KEEP_RAW_FILE=true
+        if not KEEP_RAW_FILE and file_path and os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except OSError:
+                pass
 
 
 @router.get("/document/{document_id}/status")
@@ -216,15 +283,16 @@ async def get_document_status(document_id: str):
             content={"success": False, "message": "文档不存在"},
         )
 
+    meta = doc.metadata or {}
     if doc.parse_status.value == "completed":
         return {
             "success": True,
             "document_id": document_id,
             "filename": doc.filename,
             "stage": "done",
-            "message": "已完成（历史记录）",
+            "message": meta.get("message") or "已完成（历史记录）",
             "pct": 100,
-            "incident_count": 0,
+            "incident_count": meta.get("incident_count") or 0,
             "error": None,
         }
     elif doc.parse_status.value == "failed":
@@ -233,10 +301,22 @@ async def get_document_status(document_id: str):
             "document_id": document_id,
             "filename": doc.filename,
             "stage": "failed",
-            "message": "处理失败",
-            "pct": 0,
+            "message": meta.get("message") or "处理失败",
+            "pct": meta.get("pct") or 0,
             "incident_count": 0,
-            "error": "后台处理异常",
+            "error": meta.get("error") or "后台处理异常",
+        }
+    elif meta.get("stage"):
+        # processing：从持久化的进度快照恢复（例如页面刷新/重新进入界面后）
+        return {
+            "success": True,
+            "document_id": document_id,
+            "filename": doc.filename,
+            "stage": meta.get("stage"),
+            "message": meta.get("message") or "处理中",
+            "pct": meta.get("pct") or 0,
+            "incident_count": meta.get("incident_count") or 0,
+            "error": meta.get("error"),
         }
     else:
         # processing / pending → 可能后端崩了重启
@@ -250,6 +330,57 @@ async def get_document_status(document_id: str):
             "incident_count": 0,
             "error": None,
         }
+
+
+@router.post("/document/{document_id}/cancel")
+async def cancel_document(document_id: str):
+    """取消指定文档的上传：停止后台任务并标记为已取消，前端轮询随即结束"""
+    from app.knowledge.ingestion import progress_tracker, IngestStage
+
+    task = _bg_task_map.get(document_id)
+    if task is not None and not task.done():
+        task.cancel()
+        _bg_task_map.pop(document_id, None)
+
+    # 标记为已取消（内存 + DB）
+    progress_tracker.update(
+        document_id, stage=IngestStage.FAILED,
+        message="已取消上传", pct=0,
+    )
+    try:
+        await knowledge_factory.document_repository.update_progress(
+            document_id,
+            DocumentStatus.FAILED,
+            {
+                "stage": "failed",
+                "pct": 0,
+                "message": "已取消上传",
+                "error": "用户取消",
+                "incident_count": 0,
+            },
+        )
+    except Exception:
+        pass
+    return {"success": True, "message": "已取消"}
+
+
+@router.get("/kb/{kb_id}/documents")
+async def list_kb_documents(kb_id: str):
+    """列出知识库下的全部文档（含处理状态与进度快照），供前端恢复上传进度"""
+    docs = await knowledge_factory.document_repository.list_by_kb(kb_id)
+    return {
+        "success": True,
+        "total": len(docs),
+        "data": [
+            {
+                "id": doc.id,
+                "filename": doc.filename,
+                "parse_status": doc.parse_status.value,
+                "metadata": doc.metadata or {},
+            }
+            for doc in docs
+        ],
+    }
 
 
 @router.post("/kb/{kb_id}/text")

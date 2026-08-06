@@ -1,18 +1,15 @@
-import os
 from urllib.parse import quote_plus
 
 import pymysql
-from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
-
-load_dotenv()
-
-MYSQL_HOST = os.getenv("MYSQL_HOST", "127.0.0.1").strip()
-MYSQL_PORT = int(os.getenv("MYSQL_PORT", "3306"))
-MYSQL_USER = os.getenv("MYSQL_USER", "root").strip()
-MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", "123456").strip()
-MYSQL_DATABASE = os.getenv("MYSQL_DATABASE", "Users").strip()
+from app.core.config import (
+    MYSQL_HOST,
+    MYSQL_PORT,
+    MYSQL_USER,
+    MYSQL_PASSWORD,
+    MYSQL_DATABASE,
+)
 
 
 def ensure_database_exists() -> None:

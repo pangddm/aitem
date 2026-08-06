@@ -85,6 +85,9 @@ class KnowledgeGraphRepository:
         4. Incident -> DOCUMENTED_IN -> Document (可选)
         """
         async with self.driver.session() as session:
+            print(f"[Neo4j 写入] incident={incident.id} kb={incident.kb_id} title={(getattr(incident, "title", "") or "")[:80]} category={(incident.category.value if getattr(incident, "category", None) else "")}")
+            print(f"[Neo4j 写入] symptom={(getattr(incident, "symptom", "") or "")[:120]} root_cause={(getattr(incident, "root_cause", "") or "")[:120]}")
+
             # 1. 创建 Incident 节点
             await session.run(
                 f"""

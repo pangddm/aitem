@@ -4,12 +4,9 @@ Redis 客户端单例
 统一管理 Redis 连接，避免各模块重复创建。
 支持同步操作（项目当前使用同步 redis 库）。
 """
-import os
 import redis
 
-from dotenv import load_dotenv
-
-load_dotenv()
+from app.core.config import REDIS_HOST, REDIS_PORT, REDIS_PASSWORD, REDIS_DB
 
 
 class RedisClient:
@@ -23,10 +20,10 @@ class RedisClient:
         """获取同步 Redis 客户端（懒加载）"""
         if self._client is None:
             self._client = redis.Redis(
-                host=os.getenv("REDIS_HOST", "localhost"),
-                port=int(os.getenv("REDIS_PORT", "6379")),
-                password=os.getenv("REDIS_PASSWORD", None),
-                db=int(os.getenv("REDIS_DB", "0")),
+                host=REDIS_HOST,
+                port=REDIS_PORT,
+                password=REDIS_PASSWORD,
+                db=REDIS_DB,
                 decode_responses=True,
             )
         return self._client

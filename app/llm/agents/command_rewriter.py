@@ -22,6 +22,7 @@ REWRITER_PROMPT = """你是 Kubernetes 问题诊断助手。你的任务是将�
 7. 【重要】clarification_question 必须简洁，不要使用"请问"等冗余词汇，直接提问即可
 8. 【重要】对于模糊但常见的运维问题（如"pod 起不来"、"检查集群状态"、"看看 pod"等），如果用户没有提供 namespace，默认使用 "default" 命名空间，不要向用户提问。clarification_needed 设为 false，clarification_question 设为空字符串。
 9. 【重要】对于询问"上一个问题"、"之前的问题"、"历史问题"等上下文回顾类问题，不要添加任何假设性内容。重写为"用户询问上一轮对话中提出的问题"即可，不要猜测具体内容。original_intent 设为 "chat"，key_entities 全部设为空。
+10. 【重要】对于闲聊、问候、个人偏好、一般性咨询、比较/选择类（如"docker 还是 nerdctl"、"我更喜欢 X"）、以及任何不涉及集群故障诊断、修复或操作的问题，将 original_intent 设为 "chat"，rewritten 直接保持为用户的原问题（仅做轻微措辞整理，不要套用诊断请求句式，不要添加任何技术假设或补全），key_entities 全部设为空。
 
 输出格式（严格 JSON）：
 {
@@ -127,6 +128,7 @@ class CommandRewriter(BaseAgent):
         # 对上下文回顾类问题，直接覆盖重写结果，避免 LLM 添加假设性内容
         if is_context_review:
             rewritten = "用户询问之前对话中提出的问题"
+            print(f"[Rewrite] {user_message} → {rewritten} | intent=chat（上下文回顾类）")
             return {
                 "reasoning": reasoning,
                 "rewritten": rewritten,
@@ -141,6 +143,7 @@ class CommandRewriter(BaseAgent):
                 "clarification_question": "",
             }
         
+        print(f"[Rewrite] {user_message} → {data.get('rewritten', user_message)} | intent={data.get('original_intent', 'chat')} | entities={data.get('key_entities', {})}")
         return {
             "reasoning": reasoning,
             "rewritten": data.get("rewritten", user_message),

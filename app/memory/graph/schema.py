@@ -39,10 +39,71 @@ class NodeType(str, Enum):
     DEPLOYMENT = "Deployment"
 
 
+    REPLICASET = "ReplicaSet"
+
+
+    STATEFULSET = "StatefulSet"
+
+
+    DAEMONSET = "DaemonSet"
+
+
+    JOB = "Job"
+
+
+    CRONJOB = "CronJob"
+
+
     SERVICE = "Service"
 
 
+    ENDPOINTS = "Endpoints"
+
+
+    INGRESS = "Ingress"
+
+
     CONTAINER = "Container"
+
+
+    CONFIGMAP = "ConfigMap"
+
+
+    SECRET = "Secret"
+
+
+    # RBAC
+
+    ROLE = "Role"
+
+
+    CLUSTERROLE = "ClusterRole"
+
+
+    ROLEBINDING = "RoleBinding"
+
+
+    CLUSTERROLEBINDING = "ClusterRoleBinding"
+
+
+    SERVICEACCOUNT = "ServiceAccount"
+
+
+    GROUP = "Group"
+
+
+    CLUSTERUSER = "ClusterUser"
+
+
+    # 存储
+
+    PVC = "PersistentVolumeClaim"
+
+
+    PV = "PersistentVolume"
+
+
+    STORAGECLASS = "StorageClass"
 
 
 
@@ -61,6 +122,10 @@ class NodeType(str, Enum):
     # 资源
 
     IMAGE = "Image"
+
+    # 审计日志
+
+    OPERATION = "Operation"
 
 
 
@@ -120,6 +185,18 @@ class RelationType(str, Enum):
     CHANGED_TO = "CHANGED_TO"
 
     OPERATED_ON = "OPERATED_ON"
+
+    PERFORMED = "PERFORMED"
+
+    GRANTS = "GRANTS"
+
+
+    ASSIGNED_TO = "ASSIGNED_TO"
+
+
+    SELECTS = "SELECTS"
+
+    BACKS = "BACKS"
 
     # 故障关系
 

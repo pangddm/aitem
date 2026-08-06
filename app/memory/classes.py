@@ -43,6 +43,8 @@ class MemorySource(str, Enum):
 
     PROMETHEUS = "prometheus"
 
+    MANUAL = "manual"
+
 
 
 @dataclass

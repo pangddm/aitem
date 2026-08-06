@@ -1,20 +1,26 @@
 import paramiko
-import os
 import threading
 import time
-from dotenv import load_dotenv
+from app.core.config import (
+    TARGET_HOST,
+    TARGET_PORT,
+    TARGET_USERNAME,
+    TARGET_PASSWORD,
+    SSH_TIMEOUT,
+    SSH_POOL_MAX_IDLE,
+    SSH_POOL_CLEAN_INTERVAL,
+)
 
-load_dotenv()
-HOST = os.getenv("TARGET_HOST")
-PORT = int(os.getenv("TARGET_PORT", 22))
-USERNAME = os.getenv("TARGET_USERNAME")
-PASSWORD = os.getenv("TARGET_PASSWORD")
+HOST = TARGET_HOST
+PORT = TARGET_PORT
+USERNAME = TARGET_USERNAME
+PASSWORD = TARGET_PASSWORD
 
 # SSH 连接池（按主机:端口:用户名 缓存连接）
 _ssh_pool = {}
 _pool_lock = threading.Lock()
-POOL_MAX_IDLE = 300  # 连接空闲 5 分钟后关闭
-POOL_CLEAN_INTERVAL = 60  # 每 60 秒清理一次
+POOL_MAX_IDLE = SSH_POOL_MAX_IDLE  # 连接空闲秒数
+POOL_CLEAN_INTERVAL = SSH_POOL_CLEAN_INTERVAL  # 每 N 秒清理一次
 
 
 def _pool_key(host, port, username):
@@ -102,7 +108,7 @@ _start_cleaner()
 
 
 def execute_command(command: str, host: str = None, port: int = None, username: str = None, password: str = None):
-    timeout = int(os.getenv("SSH_TIMEOUT", "30"))
+    timeout = SSH_TIMEOUT
 
     _host = host or HOST
     _port = port or PORT

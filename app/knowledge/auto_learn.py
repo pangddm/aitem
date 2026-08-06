@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from app.llm.agents.base_agent import BaseAgent
 from app.knowledge.factory import knowledge_factory
-from app.knowledge.models import CommandTrace, Incident, IncidentCategory, IncidentSource
+from app.knowledge.models import CommandTrace, Incident, IncidentSource, KnowledgeCategory
 
 
 LEARN_PROMPT = """
@@ -120,18 +120,23 @@ class AutoLearner(BaseAgent):
             return {"should_learn": False, "incident": None}
 
         # 构造 Incident 对象
+        # 将资源类型映射到知识分类（KnowledgeCategory）
         category_map = {
-            "deployment": IncidentCategory.DEPLOYMENT,
-            "pod": IncidentCategory.POD,
-            "service": IncidentCategory.SERVICE,
-            "network": IncidentCategory.NETWORK,
-            "storage": IncidentCategory.STORAGE,
-            "config": IncidentCategory.CONFIG,
+            "deployment": KnowledgeCategory.CHANGE,   # 部署/变更
+            "pod": KnowledgeCategory.FAULT,           # Pod 故障
+            "service": KnowledgeCategory.FAULT,       # 服务故障
+            "network": KnowledgeCategory.FAULT,       # 网络故障
+            "storage": KnowledgeCategory.FAULT,       # 存储故障
+            "config": KnowledgeCategory.CONFIG,       # 配置
+            "fault": KnowledgeCategory.FAULT,
+            "performance": KnowledgeCategory.PERFORMANCE,
+            "change": KnowledgeCategory.CHANGE,
+            "doc": KnowledgeCategory.DOC,
         }
 
         incident_data = {
             "title": data.get("title", "未命名案例"),
-            "category": category_map.get(data.get("category", "other"), IncidentCategory.OTHER),
+            "category": category_map.get(data.get("category", "doc"), KnowledgeCategory.DOC),
             "symptom": data.get("symptom", ""),
             "root_cause": data.get("root_cause", ""),
             "solution": data.get("solution", ""),
@@ -162,23 +167,29 @@ class AutoLearner(BaseAgent):
             incident_data = result["incident"]
             print(f"[AutoLearn] 沉淀知识: {incident_data['title']}")
 
-            # 获取或创建用户的知识库
+            # 获取或创建用户的"自动学习"知识库（与手动上传的知识库隔离）
+            AUTO_LEARN_KB_NAME = "自动学习"
             kbs = await knowledge_factory.kb_repository.list_by_owner(owner)
-            if kbs:
-                kb_id = kbs[0].id
-            else:
+            kb_id = None
+            for kb in kbs:
+                if kb.name == AUTO_LEARN_KB_NAME:
+                    kb_id = kb.id
+                    break
+
+            if not kb_id:
                 kb_id = str(uuid4())
                 now = datetime.utcnow()
                 from app.knowledge.models import KnowledgeBase
                 kb = KnowledgeBase(
                     id=kb_id,
                     owner=owner,
-                    name="自动学习",
+                    name=AUTO_LEARN_KB_NAME,
                     description="从诊断过程中自动沉淀的知识",
                     created_at=now,
                     updated_at=now,
                 )
                 await knowledge_factory.kb_repository.create(kb)
+                print(f"[AutoLearn] 创建'自动学习'知识库: kb={kb_id}")
 
             # 构造 Incident
             now = datetime.utcnow()

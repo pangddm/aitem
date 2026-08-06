@@ -9,6 +9,7 @@ from typing import Any
 from pydantic import BaseModel, Field, ValidationError
 
 from app.llm.client import get_client
+from app.core.config import EXTRACT_MODEL
 
 from app.prompt.memory import MEMORY_EXTRACT_PROMPT
 
@@ -63,7 +64,7 @@ class MemoryExtractor:
 
         self,
 
-        model: str = "deepseek-v4-flash",
+        model: str = EXTRACT_MODEL,
 
     ):
 
@@ -105,12 +106,10 @@ class MemoryExtractor:
             print("Filtered memory candidates:", filtered)
             return filtered
 
-        fallback = self._fallback_extract_from_messages(
-            messages,
-            source,
-        )
-        print("Fallback memory candidates:", fallback)
-        return fallback
+        # 提取不到就不再兜底存原文：避免把整段对话原文当成长期记忆，
+        # 也避免原文噪音挤掉真正有用的偏好/知识记忆
+        print("No memory extracted, skip storing (no raw-text fallback).")
+        return []
 
 
 

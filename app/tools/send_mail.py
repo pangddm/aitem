@@ -2,12 +2,13 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from app.core.mail import body
+from app.core.config import SMTP_HOST, SMTP_PORT, SMTP_SENDER, SMTP_PASSWORD, SMTP_RECEIVER
 # 发件人信息
-sender_email = "wxm2487183562@163.com"
-sender_password = "XSkJ734QbXsDfZq9"
+sender_email = SMTP_SENDER
+sender_password = SMTP_PASSWORD
 
 # 收件人
-receiver_email = "wxm2487183562@163.com"
+receiver_email = SMTP_RECEIVER
 
 # 创建邮件
 msg = MIMEMultipart()
@@ -21,7 +22,7 @@ msg.attach(MIMEText(body, "plain", "utf-8"))
 
 # 发送
 try:
-    server = smtplib.SMTP_SSL("smtp.163.com", 465)
+    server = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT)
     server.login(sender_email, sender_password)
 
     server.sendmail(

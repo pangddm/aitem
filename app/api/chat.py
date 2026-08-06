@@ -1,4 +1,5 @@
 import os
+import asyncio
 import json as _json
 import traceback
 from uuid import uuid4
@@ -7,7 +8,7 @@ from fastapi import APIRouter, BackgroundTasks, UploadFile, File, Form, Query
 from fastapi.responses import StreamingResponse
 
 from app.schemas.request_format import ChatRequest
-from app.services.diagnosis_service import chat_with_agent, get_memory_service, _retrieve_knowledge_context
+from app.services.diagnosis_service import chat_with_agent, get_memory_service, _retrieve_knowledge_context, _retrieve_graph_context
 from app.document.parser import parse
 from app.memory.container import memory_container
 from app.memory.classes import MemorySource
@@ -21,27 +22,115 @@ UPLOAD_DIR = "./data/uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 
-async def _ingest_to_knowledge_base(owner: str, file_path: str):
-    """后台任务：将聊天附件导入用户的知识库"""
-    try:
-        kbs = await knowledge_factory.kb_repository.list_by_owner(owner)
-        if kbs:
-            kb_id = kbs[0].id
-        else:
-            from app.knowledge.models import KnowledgeBase
-            from datetime import datetime
+CHAT_KB_NAME = "聊天文档"  # 聊天文档专用的知识库名称
 
-            kb_id = str(uuid4())
-            now = datetime.utcnow()
-            kb = KnowledgeBase(
-                id=kb_id,
-                owner=owner,
-                name="聊天文档",
-                description="自动从聊天附件中收集的文档知识",
-                created_at=now,
-                updated_at=now,
+
+async def _web_search(query: str, top: int = 5) -> str:
+    """免费联网搜索：DuckDuckGo Lite（网页结果）+ DuckDuckGo Instant Answer（定义/摘要）。
+
+    无 API key、短超时、失败静默降级；搜索不到时返回空字符串，不阻塞主流程。
+    """
+    import asyncio
+    import httpx
+    import re
+    from urllib.parse import urlparse, parse_qs, unquote
+
+    _UA = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+        )
+    }
+
+    async def _lite() -> list:
+        parts: list[str] = []
+        async with httpx.AsyncClient(timeout=6.0, headers=_UA, follow_redirects=True) as client:
+            r = await client.get("https://lite.duckduckgo.com/lite/", params={"q": query})
+        html = r.text
+        links = re.findall(
+            r"<a[^>]*href=\"([^\"]+)\"[^>]*class='result-link'[^>]*>(.*?)</a>", html, re.S,
+        )
+        snippets = re.findall(r"<td[^>]*class='result-snippet'[^>]*>(.*?)</td>", html, re.S)
+
+        def _real(h: str) -> str:
+            q = parse_qs(urlparse(h).query)
+            u = q.get("uddg", [None])[0]
+            return unquote(u) if u else h
+
+        for i, (href, title_html) in enumerate(links[:top]):
+            title = re.sub(r"<[^>]+>", "", title_html).strip()
+            sn = re.sub(r"<[^>]+>", "", snippets[i]).strip() if i < len(snippets) else ""
+            if title:
+                parts.append(f"{i + 1}. {title} — {sn}（来源：{_real(href)}）")
+        return parts
+
+    async def _instant() -> list:
+        parts: list[str] = []
+        async with httpx.AsyncClient(timeout=6.0, headers=_UA) as client:
+            r = await client.get(
+                "https://api.duckduckgo.com/",
+                params={"q": query, "format": "json", "no_html": 1, "skip_disambig": 1},
             )
-            await knowledge_factory.kb_repository.create(kb)
+        data = r.json()
+        if data.get("AbstractText"):
+            parts.append(f"- 摘要：{data['AbstractText']}")
+        if data.get("AbstractURL"):
+            parts.append(f"- 出处：{data['AbstractURL']}")
+        for topic in data.get("RelatedTopics", [])[:4]:
+            if isinstance(topic, dict):
+                text = topic.get("Text") or topic.get("Title")
+                if text:
+                    parts.append(f"- {text}")
+        return parts
+
+    out: list[str] = []
+    try:
+        lite_res, instant_res = await asyncio.gather(_lite(), _instant(), return_exceptions=True)
+        for res in (lite_res, instant_res):
+            if isinstance(res, list):
+                out.extend(res)
+    except Exception as e:
+        print(f"[WebSearch] 搜索失败: {type(e).__name__}: {e}")
+
+    uniq: list[str] = []
+    seen: set[str] = set()
+    for p2 in out:
+        if p2 not in seen:
+            seen.add(p2)
+            uniq.append(p2)
+    return "\n".join(uniq[:top])
+
+async def _get_or_create_chat_kb(owner: str) -> str:
+    """获取或创建用户的'聊天文档'知识库，返回 kb_id"""
+    from app.knowledge.models import KnowledgeBase
+    from datetime import datetime
+
+    # 查找用户所有知识库，找名为"聊天文档"的
+    kbs = await knowledge_factory.kb_repository.list_by_owner(owner)
+    for kb in kbs:
+        if kb.name == CHAT_KB_NAME:
+            return kb.id
+
+    # 没找到，创建一个
+    kb_id = str(uuid4())
+    now = datetime.utcnow()
+    kb = KnowledgeBase(
+        id=kb_id,
+        owner=owner,
+        name=CHAT_KB_NAME,
+        description="自动从聊天附件中收集的文档知识",
+        created_at=now,
+        updated_at=now,
+    )
+    await knowledge_factory.kb_repository.create(kb)
+    print(f"[RAG] 创建'聊天文档'知识库: kb={kb_id}")
+    return kb_id
+
+
+async def _ingest_to_knowledge_base(owner: str, file_path: str):
+    """后台任务：将聊天附件导入'聊天文档'知识库（与其他知识库隔离）"""
+    try:
+        kb_id = await _get_or_create_chat_kb(owner)
 
         await knowledge_factory.service.upload_document(
             kb_id=kb_id,
@@ -65,6 +154,7 @@ async def chat_stream(
     message: str = Query(...),
     conv_id: str = Query(None),
     host_id: str = Query(None),
+    web_search: bool = Query(False),
 ):
     """SSE 流式聊天——实时推送思考链、工具调用、答案，支持指定对话 ID 和主机"""
 
@@ -72,33 +162,20 @@ async def chat_stream(
     host = port = ssh_user = ssh_pass = None
     if host_id:
         from app.api.conversation import get_host_by_id
-        h = get_host_by_id(user_id, host_id)
+        h = await get_host_by_id(user_id, host_id)
         if h:
             host = h.get("host")
             port = h.get("port")
             ssh_user = h.get("username")
             ssh_pass = h.get("password")
 
-    # 如果没有传 conv_id，自动创建一个新对话
+    # 如果没有传 conv_id，自动创建一个新对话（持久化到 PostgreSQL）
     from app.api.conversation import save_message as save_conv_message
+    from app.db.repository.conversation_repository import conversation_repo
     actual_conv_id = conv_id
     if not actual_conv_id:
-        import redis as _r
-        actual_conv_id = str(uuid4())
-        now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
-        conv = {"id": actual_conv_id, "title": "新对话", "created_at": now, "updated_at": now}
-        conv_r = _r.Redis(
-            host=os.getenv("REDIS_HOST", "localhost"),
-            port=int(os.getenv("REDIS_PORT", 6379)),
-            decode_responses=True,
-        )
-        ttl = int(os.getenv("REDIS_TTL", 86400 * 7))
-        list_key = f"conv_list:{user_id}"
-        data = conv_r.get(list_key)
-        conversations = _json.loads(data) if data else []
-        conversations.append(conv)
-        conv_r.set(list_key, _json.dumps(conversations), ex=ttl)
-        conv_r.set(f"conv_msgs:{actual_conv_id}", _json.dumps([]), ex=ttl)
+        conv = await conversation_repo.create(user_id, "新对话")
+        actual_conv_id = conv["id"]
 
     # 用于自动学习的数据收集
     auto_learn_data = {
@@ -118,25 +195,48 @@ async def chat_stream(
         try:
             memory_service = await get_memory_service()
             memories = await memory_service.search(owner=user_id, query=message)
+            print(f"[Request] user={user_id} web_search={web_search} message={message}")
         except Exception:
             memories = []
+            print("[Request] 长期记忆检索失败")
+        print(f"[Memory] 检索到 {len(memories)} 条长期记忆")
 
         knowledge_context = await _retrieve_knowledge_context(user_id, message)
+        print(f"[RAG] 知识库上下文 {len(knowledge_context)} 字符")
+
+        # 注入图拓扑/审计参考（方案A：图仅作提示，事实以 kubectl 实测为准）
+        graph_context = await _retrieve_graph_context(user_id, message)
+        if graph_context:
+            knowledge_context = "【集群拓扑图参考（缓存提示，须用 kubectl 复核）】\n" + graph_context + "\n\n" + knowledge_context
+            print(f"[Graph] 注入拓扑上下文 {len(graph_context)} 字符")
+
+        # 联网搜索：把实时搜索结果注入上下文（不阻塞、失败静默降级）
+        print(f"[WebSearch] 开关={web_search}")
+        if web_search:
+            try:
+                yield f"data: {_json.dumps({'type': 'web_search', 'query': message, 'content': '正在联网搜索...'}, ensure_ascii=False)}\n\n"
+            except Exception:
+                pass
+            print(f"[WebSearch] 开始实时搜索: {message}")
+            web_info = await _web_search(message)
+            print(f"[WebSearch] 返回 {len(web_info)} 字符，注入上下文={bool(web_info)}")
+            if web_info:
+                knowledge_context = f"【联网搜索结果（实时，供参考）】\n{web_info}\n\n" + knowledge_context
+            else:
+                knowledge_context = "【联网搜索本次未返回结果，请主要依据自身知识回答】\n\n" + knowledge_context
+            try:
+                yield f"data: {_json.dumps({'type': 'web_search', 'query': message, 'content': web_info or '(无结果)'}, ensure_ascii=False)}\n\n"
+            except Exception:
+                pass
+        print(f"[Context] 注入 AI 的上下文共 {len(knowledge_context)} 字符")
 
         # 获取对话历史（用于 CommandRewriter 上下文理解）
         conversation_history = []
         if actual_conv_id:
             try:
-                conv_r = _r.Redis(
-                    host=os.getenv("REDIS_HOST", "localhost"),
-                    port=int(os.getenv("REDIS_PORT", 6379)),
-                    decode_responses=True,
-                )
-                msgs_data = conv_r.get(f"conv_msgs:{actual_conv_id}")
-                if msgs_data:
-                    all_msgs = _json.loads(msgs_data)
-                    # 取最近 10 条消息作为上下文
-                    conversation_history = all_msgs[-10:] if len(all_msgs) > 10 else all_msgs
+                all_msgs = await conversation_repo.list_messages(actual_conv_id)
+                # 取最近 10 条消息作为上下文
+                conversation_history = all_msgs[-10:] if len(all_msgs) > 10 else all_msgs
             except Exception:
                 pass
         
@@ -199,34 +299,61 @@ async def chat_stream(
                 yield f"data: {_json.dumps({'type': 'error', 'content': str(e)[:200]}, ensure_ascii=False)}\n\n"
             except Exception:
                 pass
+
         finally:
+            # 发送结束事件
+            try:
+                yield f"data: {_json.dumps({'type': 'done', 'content': ''}, ensure_ascii=False)}\n\n"
+            except Exception:
+                pass
+
             full_answer = "".join(all_chunks) if all_chunks else ""
             # 保存到对话存储（附带思考链）
             try:
-                save_conv_message(actual_conv_id, "user", message, user_id)
+                await save_conv_message(actual_conv_id, "user", message, user_id)
                 if full_answer:
-                    save_conv_message(
+                    await save_conv_message(
                         actual_conv_id, "assistant", full_answer, user_id,
                         thinking_chain=thinking_chain if thinking_chain else None,
                     )
-            except Exception:
-                pass
+            except Exception as save_err:
+                print(f"[SSE] Save message error: {type(save_err).__name__}: {save_err}")
+                traceback.print_exc()
             # 不再保存到 SessionMemory，避免跨对话污染
             # 对话历史已通过 conv_msgs:{actual_conv_id} 按对话隔离
 
-            # 自动学习：后台沉淀知识
-            if auto_learn_data["task_plan"] and auto_learn_data["execution_result"] and auto_learn_data["observation"]:
+            # 长期记忆：后台异步沉淀本次对话（不阻塞 SSE 流的结束）
+            async def _run_memory():
                 try:
-                    from app.knowledge.auto_learn import AutoLearner
-                    learner = AutoLearner()
-                    await learner.learn_and_store(
+                    msgs = [{"role": "user", "content": message}]
+                    if full_answer:
+                        msgs.append({"role": "assistant", "content": full_answer})
+                    service = memory_container.create_service()
+                    await service.process(
                         owner=user_id,
-                        task_plan=auto_learn_data["task_plan"],
-                        execution_result=auto_learn_data["execution_result"],
-                        observation=auto_learn_data["observation"],
+                        messages=msgs,
+                        source=MemorySource.CHAT,
                     )
-                except Exception as learn_err:
-                    print(f"[AutoLearn] 后台学习异常: {learn_err}")
+                except Exception as mem_err:
+                    print(f"[Memory] 对话长期记忆存储失败: {type(mem_err).__name__}: {mem_err}")
+            asyncio.create_task(_run_memory())
+
+            # 自动学习：作为后台任务异步沉淀知识，不阻塞 SSE 流的结束，
+            # 避免"回复已完成但光标还在闪"的问题
+            if auto_learn_data["task_plan"] and auto_learn_data["execution_result"] and auto_learn_data["observation"]:
+                async def _run_auto_learn():
+                    try:
+                        from app.knowledge.auto_learn import AutoLearner
+                        learner = AutoLearner()
+                        await learner.learn_and_store(
+                            owner=user_id,
+                            task_plan=auto_learn_data["task_plan"],
+                            execution_result=auto_learn_data["execution_result"],
+                            observation=auto_learn_data["observation"],
+                        )
+                    except Exception as learn_err:
+                        print(f"[AutoLearn] 后台学习异常: {learn_err}")
+                asyncio.create_task(_run_auto_learn())
 
     return StreamingResponse(
         event_stream(),
@@ -369,37 +496,20 @@ async def update_settings(
 async def download_report(conv_id: str, user_id: str = Query(...)):
     """
     下载对话报告（Markdown 格式）
-    从 Redis 读取对话数据，汇总为格式良好的 Markdown 报告文件
+    从 PostgreSQL 读取对话数据，汇总为格式良好的 Markdown 报告文件
     """
-    import redis as _r
     from fastapi.responses import Response
     from datetime import datetime
     
-    conv_r = _r.Redis(
-        host=os.getenv("REDIS_HOST", "localhost"),
-        port=int(os.getenv("REDIS_PORT", 6379)),
-        decode_responses=True,
-    )
-    
     try:
-        # 从 Redis 获取对话消息
-        msgs_data = conv_r.get(f"conv_msgs:{conv_id}")
-        if not msgs_data:
-            return {"success": False, "message": "对话不存在或为空"}
-        
-        messages = _json.loads(msgs_data)
+        # 从 PostgreSQL 获取对话消息
+        messages = await conversation_repo.list_messages(conv_id)
         if not messages:
             return {"success": False, "message": "对话不存在或为空"}
         
         # 获取对话标题
-        list_data = conv_r.get(f"conv_list:{user_id}")
-        title = "Kubedoctor 报告"
-        if list_data:
-            conversations = _json.loads(list_data)
-            for conv in conversations:
-                if conv.get("id") == conv_id:
-                    title = conv.get("title", "Kubedoctor 报告")
-                    break
+        conv_info = await conversation_repo.get(conv_id)
+        title = conv_info["title"] if conv_info else "Kubedoctor 报告"
         
         # 构建格式良好的 Markdown 报告
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

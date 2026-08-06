@@ -3,26 +3,28 @@ LLM 客户端 — 支持多模型自动切换
 当 flash 模型连接失败时自动切换到 pro 模型
 使用线程本地存储避免并发请求互相干扰
 """
-import os
 import asyncio
 import threading
 from openai import AsyncOpenAI
-from dotenv import load_dotenv
+from app.core.config import (
+    DEEPSEEK_API_KEY,
+    DEEPSEEK_BASE_URL,
+    DEEPSEEK_MODEL,
+    DEEPSEEK_FALLBACK_MODEL,
+)
 
-load_dotenv()
-
-API_KEY = os.getenv("DEEPSEEK_API_KEY")
+API_KEY = DEEPSEEK_API_KEY
 
 # 模型配置：按优先级排列，连接失败自动切换
 MODEL_CONFIGS = [
     {
-        "name": "deepseek-chat",       # DeepSeek V3 (flash)
-        "base_url": "https://api.deepseek.com",
+        "name": DEEPSEEK_MODEL or "deepseek-chat",       # DeepSeek V3 (flash)
+        "base_url": DEEPSEEK_BASE_URL,
         "display_name": "DeepSeek Flash",
     },
     {
-        "name": "deepseek-reasoner",   # DeepSeek R1 (pro, 有思考链)
-        "base_url": "https://api.deepseek.com",
+        "name": DEEPSEEK_FALLBACK_MODEL or "deepseek-reasoner",   # DeepSeek R1 (pro, 有思考链)
+        "base_url": DEEPSEEK_BASE_URL,
         "display_name": "DeepSeek Pro",
     },
 ]

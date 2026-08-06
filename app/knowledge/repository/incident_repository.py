@@ -9,18 +9,33 @@ import asyncpg
 from app.knowledge.models import (
     CommandTrace,
     Incident,
-    IncidentCategory,
     IncidentSource,
+    KnowledgeCategory,
 )
 
 
 class IncidentRepository:
+
+    # stdout/stderr 最大存储长度（超过截断）
+    MAX_OUTPUT_LENGTH = 10000
 
     def __init__(
         self,
         pool: asyncpg.Pool,
     ):
         self.pool = pool
+
+    @classmethod
+    def _truncate_output(cls, text: str | None) -> str | None:
+        """截断过长的命令输出，避免数据库膨胀"""
+        if text is None:
+            return None
+        if len(text) <= cls.MAX_OUTPUT_LENGTH:
+            return text
+        return (
+            text[: cls.MAX_OUTPUT_LENGTH]
+            + f"\n... [truncated, original length: {len(text)} chars]"
+        )
 
     # ==========================================================
     # Row -> Model
@@ -50,7 +65,7 @@ class IncidentRepository:
                 row["source"]
             ),
 
-            category=IncidentCategory(
+            category=IncidentRepository._parse_category(
                 row["category"]
             ),
 
@@ -80,6 +95,27 @@ class IncidentRepository:
 
             commands=commands,
         )
+
+    # ==========================================================
+    # Helpers
+    # ==========================================================
+
+    @staticmethod
+    def _parse_category(value: str) -> KnowledgeCategory:
+        """解析 category，兼容旧数据（deployment/pod/service/network/storage/other）"""
+        # 旧资源类型 → 新知识分类映射
+        legacy_map = {
+            "deployment": KnowledgeCategory.CHANGE,
+            "pod": KnowledgeCategory.FAULT,
+            "service": KnowledgeCategory.FAULT,
+            "network": KnowledgeCategory.FAULT,
+            "storage": KnowledgeCategory.FAULT,
+            "other": KnowledgeCategory.DOC,
+        }
+        try:
+            return KnowledgeCategory(value)
+        except ValueError:
+            return legacy_map.get(value, KnowledgeCategory.DOC)
 
     # ==========================================================
     # Load Commands
@@ -195,7 +231,7 @@ class IncidentRepository:
 
                     UUID(incident.id),
 
-                    incident.owner,
+                    UUID(incident.owner),
 
                     UUID(incident.kb_id),
 
@@ -250,8 +286,8 @@ class IncidentRepository:
                         exit_code = cmd.get("exit_code", 0)
                     else:
                         command = cmd.command
-                        stdout = cmd.stdout
-                        stderr = cmd.stderr
+                        stdout = self._truncate_output(cmd.stdout)
+                        stderr = self._truncate_output(cmd.stderr)
                         exit_code = cmd.exit_code
 
                     await conn.execute(
@@ -368,7 +404,7 @@ class IncidentRepository:
                     [
                         (
                             UUID(inc.id),
-                            inc.owner,
+                            UUID(inc.owner),
                             UUID(inc.kb_id),
                             UUID(inc.document_id) if inc.document_id else None,
                             inc.source.value,
@@ -399,8 +435,8 @@ class IncidentRepository:
                             UUID(inc.id),
                             step,
                             cmd.command,
-                            cmd.stdout,
-                            cmd.stderr,
+                            self._truncate_output(cmd.stdout),
+                            self._truncate_output(cmd.stderr),
                             cmd.exit_code,
                         ))
 
@@ -606,8 +642,8 @@ class IncidentRepository:
                         UUID(incident.id),
                         step,
                         cmd.command,
-                        cmd.stdout,
-                        cmd.stderr,
+                        self._truncate_output(cmd.stdout),
+                        self._truncate_output(cmd.stderr),
                         cmd.exit_code,
                     )
 
@@ -628,6 +664,21 @@ class IncidentRepository:
                 WHERE id=$1
                 """,
                 UUID(incident_id),
+            )
+
+    async def delete_by_document(
+        self,
+        document_id: str,
+    ) -> None:
+        """删除某个文档下的所有 incident（用于重新入库前的清理）"""
+
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                DELETE FROM incident
+                WHERE document_id=$1
+                """,
+                UUID(document_id),
             )
 
     # ==========================================================
@@ -818,83 +869,6 @@ class IncidentRepository:
                 results.append(incident)
 
         return results
-
-    # ==========================================================
-    # Batch Create
-    # ==========================================================
-
-    async def batch_create(
-        self,
-        incidents: list[Incident],
-    ) -> None:
-
-        if not incidents:
-            return
-
-        async with self.pool.acquire() as conn:
-
-            async with conn.transaction():
-
-                for incident in incidents:
-                    await conn.execute(
-                        """
-                        INSERT INTO incident (
-                            id, owner, kb_id, document_id,
-                            source, category, context_text,
-                            title, summary, symptom,
-                            root_cause, solution, keywords,
-                            environment, metadata, embedding,
-                            created_at, updated_at
-                        )
-                        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
-                               $11,$12,$13,$14,$15,$16,$17,$18)
-                        ON CONFLICT (id) DO NOTHING
-                        """,
-                        UUID(incident.id),
-                        incident.owner,
-                        UUID(incident.kb_id),
-                        (
-                            UUID(incident.document_id)
-                            if incident.document_id
-                            else None
-                        ),
-                        incident.source.value,
-                        incident.category.value,
-                        incident.context_text,
-                        incident.title,
-                        incident.summary,
-                        incident.symptom,
-                        incident.root_cause,
-                        incident.solution,
-                        incident.keywords,
-                        json.dumps(incident.environment),
-                        json.dumps(incident.metadata),
-                        incident.embedding,
-                        incident.created_at,
-                        incident.updated_at,
-                    )
-
-                    for step, cmd in enumerate(
-                        incident.commands,
-                        start=1,
-                    ):
-                        await conn.execute(
-                            """
-                            INSERT INTO incident_command(
-                                id, incident_id, step,
-                                command, stdout, stderr, exit_code
-                            )
-                            VALUES($1,$2,$3,$4,$5,$6,$7)
-                            ON CONFLICT DO NOTHING
-                            """,
-                            uuid4(),
-                            UUID(incident.id),
-                            step,
-                            cmd.command,
-                            cmd.stdout,
-                            cmd.stderr,
-                            cmd.exit_code,
-                        )
 
     # ==========================================================
     # Helpers

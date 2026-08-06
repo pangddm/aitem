@@ -6,6 +6,7 @@ from app.knowledge.repository.incident_repository import (
     IncidentRepository,
 )
 from app.knowledge.reranker import Reranker
+from app.core.config import RAG_TOP_K, RAG_RERANK_TOP_K, ENABLE_RERANK
 
 
 class Retriever:
@@ -24,8 +25,8 @@ class Retriever:
         self,
         kb_id: str,
         query: str,
-        top_k: int = 10,
-        rerank_top_k: int = 3,
+        top_k: int = RAG_TOP_K,
+        rerank_top_k: int = RAG_RERANK_TOP_K,
     ) -> list[Incident]:
         """
         Retrieval Pipeline
@@ -59,17 +60,24 @@ class Retriever:
         if not candidates:
             return []
 
-        return await self.reranker.rerank(
-            query=query,
-            incidents=candidates,
-            top_k=rerank_top_k,
-        )
+        # 默认关闭 LLM 精排（避免慢/不稳定），直接返回向量+关键词候选
+        if ENABLE_RERANK:
+            try:
+                return await self.reranker.rerank(
+                    query=query,
+                    incidents=candidates,
+                    top_k=rerank_top_k,
+                )
+            except Exception as e:
+                print(f"[RAG] 精排异常，回退到原始候选: {type(e).__name__}: {e}")
+                return candidates[:rerank_top_k]
+        return candidates[:rerank_top_k]
 
     async def vector_search(
         self,
         kb_id: str,
         query: str,
-        top_k: int = 10,
+        top_k: int = RAG_TOP_K,
     ) -> list[Incident]:
 
         embedding = await self.embedding_service.embed(
@@ -86,7 +94,7 @@ class Retriever:
         self,
         kb_id: str,
         query: str,
-        top_k: int = 10,
+        top_k: int = RAG_TOP_K,
     ) -> list[Incident]:
 
         return await self.repository.keyword_search(
@@ -99,7 +107,7 @@ class Retriever:
         self,
         kb_id: str,
         query: str,
-        top_k: int = 10,
+        top_k: int = RAG_TOP_K,
     ) -> list[Incident]:
 
         embedding = await self.embedding_service.embed(

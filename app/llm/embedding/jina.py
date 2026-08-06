@@ -2,16 +2,16 @@ import asyncio
 
 import httpx
 
-from app.core.config import JINA_API_KEY
+from app.core.config import JINA_API_KEY, JINA_BASE_URL, JINA_MODEL, JINA_BASE_URL, JINA_MODEL
 
 from .base import EmbeddingModel
 
 
 class JinaEmbedding(EmbeddingModel):
 
-    BASE_URL = "https://api.jina.ai/v1/embeddings"
+    BASE_URL = JINA_BASE_URL
 
-    MODEL = "jina-embeddings-v5-text-small"
+    MODEL = JINA_MODEL
 
     def __init__(self):
 

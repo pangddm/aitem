@@ -8,6 +8,7 @@ from typing import Literal, Optional
 
 
 from app.llm.client import get_client
+from app.core.config import EXTRACT_MODEL
 
 from app.memory.classes import Memory, MemoryType
 
@@ -40,7 +41,7 @@ class MemoryMerger:
 
         self,
 
-        model="deepseek-v4-flash",
+        model=EXTRACT_MODEL,
 
     ):
 

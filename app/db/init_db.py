@@ -1,173 +1,65 @@
 # app/db/init_db.py
 
-import os
-from urllib.parse import quote_plus
-
 import asyncpg
-import pymysql
 from dotenv import load_dotenv
 from pgvector.asyncpg import register_vector
-from sqlalchemy import Column, Integer, String, create_engine
-from sqlalchemy.orm import declarative_base
 
-from app.db.knowledge_schema import create_knowledge_schema
+from app.db.schema import create_all_schema
 
 load_dotenv()
 
-EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM"))
-
-# ==========================================================
-# MySQL
-# ==========================================================
-
-MYSQL_HOST = os.getenv("MYSQL_HOST", "127.0.0.1").strip()
-MYSQL_PORT = os.getenv("MYSQL_PORT", "3306")
-MYSQL_USER = os.getenv("MYSQL_USER", "root").strip()
-MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", "123456").strip()
-MYSQL_DATABASE = os.getenv("MYSQL_DATABASE", "Users").strip()
-
-
-def ensure_database_exists() -> None:
-    conn = pymysql.connect(
-        host=MYSQL_HOST,
-        port=int(MYSQL_PORT),
-        user=MYSQL_USER,
-        password=MYSQL_PASSWORD,
-        charset="utf8mb4",
-        autocommit=True,
-    )
-
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute(
-                f"""
-                CREATE DATABASE IF NOT EXISTS `{MYSQL_DATABASE}`
-                CHARACTER SET utf8mb4
-                COLLATE utf8mb4_unicode_ci
-                """
-            )
-    finally:
-        conn.close()
-
-
-ensure_database_exists()
-
-MYSQL_URL = (
-    f"mysql+pymysql://{quote_plus(MYSQL_USER)}:"
-    f"{quote_plus(MYSQL_PASSWORD)}"
-    f"@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DATABASE}"
-)
-
-mysql_engine = create_engine(MYSQL_URL)
-
-MysqlBase = declarative_base()
-
-
-class User(MysqlBase):
-
-    __tablename__ = "users"
-
-    id = Column(
-        Integer,
-        primary_key=True,
-        autoincrement=True,
-    )
-
-    username = Column(
-        String(50),
-        unique=True,
-        nullable=False,
-    )
-
-    password = Column(
-        String(255),
-        nullable=False,
-    )
-
 
 def init_mysql():
+    """初始化 MySQL（仅创建 users 表，兼容旧代码）"""
+    from app.db.mysql.database import Base as MysqlBase, engine as mysql_engine
+    from app.db.mysql.models import User
+    import pymysql
+    import os
 
-    MysqlBase.metadata.create_all(
-        mysql_engine
-    )
+    # 检查 users 表是否存在且 schema 正确
+    # 如果 id 列不是 VARCHAR(36)，则删除重建
+    try:
+        conn = pymysql.connect(
+            host=os.getenv("MYSQL_HOST", "127.0.0.1").strip(),
+            port=int(os.getenv("MYSQL_PORT", "3306")),
+            user=os.getenv("MYSQL_USER", "root").strip(),
+            password=os.getenv("MYSQL_PASSWORD", "123456").strip(),
+            database=os.getenv("MYSQL_DATABASE", "Users").strip(),
+            charset="utf8mb4",
+            autocommit=True,
+        )
+        cursor = conn.cursor()
+        cursor.execute("DESCRIBE users")
+        columns = cursor.fetchall()
+        # 检查 id 列是否为 varchar 类型
+        id_col = next((c for c in columns if c[0] == "id"), None)
+        if id_col and "varchar" not in (id_col[1] or "").lower():
+            print("[MySQL] users 表 id 列类型错误，正在重建...")
+            cursor.execute("DROP TABLE IF EXISTS users")
+        conn.close()
+    except Exception:
+        pass  # 表不存在，create_all 会自动创建
 
+    MysqlBase.metadata.create_all(mysql_engine)
     print("MySQL initialized.")
 
 
 # ==========================================================
-# PostgreSQL
+# PostgreSQL（统一持久化主库）
 # ==========================================================
 
 async def init_database(
     pool: asyncpg.Pool,
 ):
+    """初始化 PostgreSQL 所有表（幂等操作）"""
 
     async with pool.acquire() as conn:
-
         await register_vector(conn)
 
-        # pgvector
-        await conn.execute(
-            """
-            CREATE EXTENSION IF NOT EXISTS vector;
-            """
-        )
+        # pgvector 扩展
+        await conn.execute("CREATE EXTENSION IF NOT EXISTS vector;")
 
-        # Memory
-        await conn.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS memory (
-
-                id UUID PRIMARY KEY,
-
-                owner TEXT NOT NULL,
-
-                type TEXT NOT NULL,
-
-                content TEXT NOT NULL,
-
-                summary TEXT,
-
-                source TEXT NOT NULL,
-
-                entities TEXT[],
-
-                importance REAL DEFAULT 0.5,
-
-                metadata JSONB,
-
-                embedding VECTOR({EMBEDDING_DIM}) NOT NULL,
-
-                created_at TIMESTAMP NOT NULL,
-
-                updated_at TIMESTAMP NOT NULL
-
-            );
-            """
-        )
-
-        await conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_memory_owner
-            ON memory(owner);
-        """)
-
-        await conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_memory_type
-            ON memory(type);
-        """)
-
-        await conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_memory_created
-            ON memory(created_at DESC);
-        """)
-
-        await conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_memory_embedding
-            ON memory
-            USING hnsw (embedding vector_cosine_ops);
-        """)
-
-        # RAG Schema
-        await create_knowledge_schema(conn)
+        # 创建所有表
+        await create_all_schema(conn)
 
     print("PostgreSQL initialized.")

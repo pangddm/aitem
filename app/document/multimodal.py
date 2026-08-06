@@ -1,22 +1,12 @@
-import os
 import base64
 
 from openai import OpenAI
-from dotenv import load_dotenv
-
-
-load_dotenv()
+from app.core.config import DASHSCOPE_API_KEY, VISION_MODEL, VISION_BASE_URL
 
 
 client = OpenAI(
-
-    api_key=os.getenv(
-        "DASHSCOPE_API_KEY"
-    ),
-
-    base_url=
-    "https://ws-desdcuc07ogrkiwd.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
-
+    api_key=DASHSCOPE_API_KEY,
+    base_url=VISION_BASE_URL,
 )
 
 
@@ -40,7 +30,7 @@ def image_understanding(
 
     response = client.chat.completions.create(
 
-        model="qwen3.5-397b-a17b",
+        model=VISION_MODEL,
 
         messages=[
 

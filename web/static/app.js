@@ -2,7 +2,22 @@
    Kubedoctor 前端应用 - ChatGPT 风格 (白色主题)
    ======================================================================== */
 
+const EXEC_STAGE_TEXT = {
+  rewriter:"正在理解用户需求", orchestrator:"正在分析用户需求",
+  risk_validator:"正在进行风险评估", risk_assessor:"正在进行风险评估",
+  executor:"正在执行命令", observer:"正在检查执行结果", reporter:"正在整理结果",
+  resolved:"问题已解决，正在整理结果", query_complete:"查询完成，正在整理结果", planning_next:"正在分析下一步",
+};
+const EXEC_STAGE_LABEL = {
+  rewriter:"理解问题", orchestrator:"意图分析", risk_validator:"风险评估", risk_assessor:"风险评估",
+  executor:"执行命令", observer:"结果观察", reporter:"生成报告",
+  resolved:"问题解决", query_complete:"查询完成", planning_next:"下一步分析",
+};
+
+const FLOW_LABELS = ["意图识别", "风险校验", "执行命令", "观察结果", "生成报告"];
+
 const App = {
+  webSearch: false,
   state: {
     userId: localStorage.getItem("kd_user_id") || "",
     username: localStorage.getItem("kd_username") || "",
@@ -221,7 +236,7 @@ const App = {
       "sidebar", "newChatBtn", "conversationList", "userAvatar", "userName",
       "logoutBtn", "sidebarToggle", "currentChatTitle", "chatContainer",
       "chatMessages", "welcomeScreen", "messageInput", "sendBtn", "stopBtn",
-      "attachBtn", "voiceBtn", "fileInput", "fileTag", "fileTagText",
+      "attachBtn", "voiceBtn", "netBtn", "fileInput", "fileTag", "fileTagText",
       "fileTagRemove", "knowledgeBtn", "knowledgeModal", "knowledgeModalClose",
       "knowledgeModalBody", "loginOverlay",
       "hostSelect", "hostMgrBtn", "hostModal", "hostModalClose",
@@ -230,6 +245,9 @@ const App = {
       "settingsBtn", "settingsModal", "settingsModalClose",
       "settingsTheme", "settingsLanguage", "settingsAvatarInput",
       "settingsAvatarPreview", "settingsSaveBtn", "settingsTestMode",
+      "graphBtn", "graphPanel", "graphPanelClose", "graphRefreshBtn",
+      "graphCanvas", "graphEmpty", "graphLegend", "graphPanelSub",
+      "graphRefreshHint", "graphIntervalInput", "graphIntervalSave",
     ];
     ids.forEach((id) => { this.el[id] = document.getElementById(id); });
     this.welcomeTpl = this.el.welcomeScreen ? this.el.welcomeScreen.outerHTML : "";
@@ -348,6 +366,8 @@ const App = {
     this.updateAvatar();
     this.loadHosts();
     this.updateUILanguage();
+    // 登录后自动展示集群拓扑图
+    this.openGraphPanel();
   },
 
   updateAvatar() {
@@ -457,6 +477,7 @@ const App = {
 
     // 附件
     this.el.attachBtn.addEventListener("click", () => this.el.fileInput.click());
+    this.el.netBtn.addEventListener("click", () => this.toggleWebSearch());
     this.el.fileInput.addEventListener("change", (e) => this.handleFile(e));
     this.el.fileTagRemove.addEventListener("click", () => this.clearFile());
 
@@ -479,6 +500,8 @@ const App = {
     // 主机管理
     this.el.hostSelect.addEventListener("change", () => {
       this.state.hostId = this.el.hostSelect.value || null;
+      // 连接某台主机时自动打开并加载拓扑图
+      this.openGraphPanel();
     });
     this.el.hostMgrBtn.addEventListener("click", () => this.openHostModal());
     this.el.hostModalClose.addEventListener("click", () => this.closeHostModal());
@@ -494,6 +517,18 @@ const App = {
       if (e.target === this.el.settingsModal) this.closeSettingsModal();
     });
     this.el.settingsSaveBtn.addEventListener("click", () => this.saveSettings());
+
+    // 拓扑图
+    this.el.graphBtn.addEventListener("click", () => {
+      if (this.el.graphPanel.classList.contains("open")) {
+        this.closeGraphPanel();
+      } else {
+        this.openGraphPanel();
+      }
+    });
+    this.el.graphPanelClose.addEventListener("click", () => this.closeGraphPanel());
+    this.el.graphRefreshBtn.addEventListener("click", () => this.rebuildTopology());
+    this.el.graphIntervalSave.addEventListener("click", () => this.saveTopologyInterval());
     this.el.settingsTheme.addEventListener("change", () => {
       // 实时预览主题
       const val = this.el.settingsTheme.value;
@@ -875,30 +910,9 @@ const App = {
     // 创建助手消息占位
     const assistantEl = this.createMessageEl("assistant", "");
     const contentEl = assistantEl.querySelector(".message-content");
-    // 立即添加一个空的思考链容器（折叠状态），让用户知道 AI 正在思考
-    const thinkingWrapper = document.createElement("div");
-    thinkingWrapper.className = "event-block thinking-chain animating";
-    thinkingWrapper.innerHTML = `
-      <div class="event-title">
-        <span>💭 思考链</span>
-        <span class="event-status">⏳</span>
-      </div>
-      <div class="event-content">
-        <div class="thinking-chain-inner"></div>
-      </div>
-    `;
+    // 立即创建「意图识别」执行模块，让用户知道 AI 正在分析
     const answerArea = contentEl.querySelector(".answer-area");
-    if (answerArea) {
-      contentEl.insertBefore(thinkingWrapper, answerArea);
-    } else {
-      contentEl.appendChild(thinkingWrapper);
-    }
-    // 点击标题切换折叠
-    const thinkingTitle = thinkingWrapper.querySelector(".event-title");
-    const thinkingContent = thinkingWrapper.querySelector(".event-content");
-    thinkingTitle.addEventListener("click", () => {
-      thinkingContent.classList.toggle("collapsed");
-    });
+    this.ensureExecBox(contentEl);
     // 将 typing-cursor 加到 answer-area 上
     if (answerArea) {
       answerArea.classList.add("typing-cursor");
@@ -912,14 +926,6 @@ const App = {
     this.toggleStreamingUI(true);
     this.state.abortCtrl = new AbortController();
 
-    // 思考链管理
-    let currentThinkingBlock = null;
-    let thinkingQueue = [];
-    let thinkingTimer = null;
-    let thinkingChain = [];  // 收集思考链数据用于持久化
-    // 将 thinkingChain 绑定到 handleStreamEvent 可访问的位置
-    this._thinkingChain = thinkingChain;
-
     let fullAnswer = "";
     try {
       const params = new URLSearchParams({
@@ -928,6 +934,7 @@ const App = {
       });
       if (this.state.convId) params.set("conv_id", this.state.convId);
       if (this.state.hostId) params.set("host_id", this.state.hostId);
+      if (this.webSearch) params.set("web_search", "1");
 
       const res = await fetch(`/chat/stream?${params}`, {
         signal: this.state.abortCtrl.signal,
@@ -988,9 +995,186 @@ const App = {
     }
   },
 
+  /* ───── 任务状态 / 执行记录展示 ───── */
+  ensureExecBox(contentEl) {
+    let box = contentEl.querySelector(".execution-log.exec-box");
+    if (box) return box;
+    box = document.createElement("div");
+    box.className = "execution-log animating exec-box";
+    box._flowIdx = 0;
+    box.innerHTML = `
+      <div class="flow-steps">
+        <div class="flow-step" data-idx="0"><span class="flow-dot">1</span><span class="flow-label">意图识别</span></div>
+        <div class="flow-connector"></div>
+        <div class="flow-step" data-idx="1"><span class="flow-dot">2</span><span class="flow-label">风险校验</span></div>
+        <div class="flow-connector"></div>
+        <div class="flow-step" data-idx="2"><span class="flow-dot">3</span><span class="flow-label">执行命令</span></div>
+        <div class="flow-connector"></div>
+        <div class="flow-step" data-idx="3"><span class="flow-dot">4</span><span class="flow-label">观察结果</span></div>
+        <div class="flow-connector"></div>
+        <div class="flow-step" data-idx="4"><span class="flow-dot">5</span><span class="flow-label">生成报告</span></div>
+      </div>
+      <div class="exec-steps"></div>
+      <div class="exec-status-bar">
+        <span class="exec-status-icon">&#9203;</span>
+        <span class="exec-status-text">正在分析用户需求</span>
+      </div>
+    `;
+    const answer = contentEl.querySelector(".answer-area");
+    if (answer) contentEl.insertBefore(box, answer);
+    else contentEl.appendChild(box);
+    return box;
+  },
+
+  setFlowStage(contentEl, idx) {
+    const box = contentEl.querySelector(".execution-log.exec-box");
+    if (!box) return;
+    box._flowIdx = idx;
+    const steps = box.querySelectorAll(".flow-step");
+    steps.forEach((el, i) => {
+      el.classList.remove("active", "done");
+      const dot = el.querySelector(".flow-dot");
+      if (i < idx) {
+        el.classList.add("done");
+        if (dot) dot.textContent = "✓";
+      } else {
+        if (dot) dot.textContent = String(i + 1);
+        if (i === idx) el.classList.add("active");
+      }
+    });
+    box.querySelectorAll(".flow-connector").forEach((cn, i) => {
+      cn.classList.toggle("done", i < idx);
+    });
+    box.querySelectorAll(".exec-step").forEach((it) => {
+      const ii = parseInt(it.getAttribute("data-idx"), 10);
+      it.classList.remove("done", "active");
+      if (ii < idx) it.classList.add("done");
+      else if (ii === idx) it.classList.add("active");
+    });
+  },
+
+  ensureStepItem(contentEl, idx) {
+    const box = contentEl.querySelector(".execution-log.exec-box");
+    if (!box) return null;
+    let item = box.querySelector(`.exec-step[data-idx="${idx}"]`);
+    if (item) return item;
+    item = document.createElement("div");
+    item.className = "exec-step";
+    item.setAttribute("data-idx", idx);
+    item.innerHTML = `
+      <div class="exec-step-header">
+        <span class="exec-step-dot"></span>
+        <span class="exec-step-label">${FLOW_LABELS[idx]}</span>
+        <span class="exec-step-state"></span>
+      </div>
+      <div class="exec-step-content"></div>
+    `;
+    const cur = (box._flowIdx != null) ? box._flowIdx : idx;
+    if (idx < cur) item.classList.add("done");
+    else if (idx === cur) item.classList.add("active");
+    const container = box.querySelector(".exec-steps");
+    if (!container) { contentEl.appendChild(item); return item; }
+    let inserted = false;
+    container.querySelectorAll(".exec-step").forEach((el) => {
+      const ii = parseInt(el.getAttribute("data-idx"), 10);
+      if (!inserted && ii > idx) {
+        container.insertBefore(item, el);
+        inserted = true;
+      }
+    });
+    if (!inserted) container.appendChild(item);
+    return item;
+  },
+
+  appendStep(contentEl, idx, text) {
+    const t = typeof text === "string" ? text.trim() : JSON.stringify(text);
+    if (!t) return;
+    const item = this.ensureStepItem(contentEl, idx);
+    if (!item) return;
+    const body = item.querySelector(".exec-step-content");
+    if (!body) return;
+    if (body.dataset.lastLine === t) return;
+    const div = document.createElement("div");
+    div.className = "exec-step-line";
+    div.textContent = t;
+    body.appendChild(div);
+    body.dataset.lastLine = t;
+    this.scrollToBottom();
+  },
+
+  flowIndexForStage(stage) {
+    const map = {
+      rewriter: 0, orchestrator: 0,
+      risk_validator: 1, risk_assessor: 1,
+      executor: 2,
+      observer: 3,
+      reporter: 4, resolved: 4, query_complete: 4, planning_next: 4,
+    };
+    return map[stage] != null ? map[stage] : null;
+  },
+
+  setExecStatus(contentEl, statusText) {
+    const box = this.ensureExecBox(contentEl);
+    const t = box.querySelector(".exec-status-text");
+    if (t) t.textContent = statusText || "正在处理...";
+    this.scrollToBottom();
+  },
+
+
+
+  markExecComplete(contentEl) {
+    const box = contentEl.querySelector(".execution-log.exec-box");
+    if (!box) return;
+    const steps = box.querySelectorAll(".flow-step");
+    steps.forEach((el) => {
+      el.classList.remove("active");
+      el.classList.add("done");
+      const dot = el.querySelector(".flow-dot");
+      if (dot) dot.textContent = "✓";
+    });
+    box.querySelectorAll(".flow-connector").forEach((cn) => cn.classList.add("done"));
+    box.querySelectorAll(".exec-step").forEach((el) => {
+      el.classList.remove("active");
+      el.classList.add("done");
+      const st = el.querySelector(".exec-step-state");
+      if (st) st.textContent = "✓";
+    });
+    const icon = box.querySelector(".exec-status-icon");
+    if (icon) icon.textContent = "✓";
+    const t = box.querySelector(".exec-status-text");
+    if (t) t.textContent = "报告生成完成";
+    box.classList.remove("animating");
+    box.classList.add("completed");
+  },
+
+
+
+  attachDownloadButton(contentEl) {
+    if (!this.state.convId) return;
+    const box = contentEl.querySelector(".execution-log.exec-box");
+    let holder = box ? box.querySelector(".exec-status-bar") : null;
+    if (!holder) holder = contentEl.querySelector(".answer-area") || contentEl;
+    if (holder.querySelector(".report-download-btn")) return;
+    const downloadBtn = document.createElement("a");
+    downloadBtn.href = `/chat/report/${encodeURIComponent(this.state.convId)}?user_id=${encodeURIComponent(this.state.userId)}`;
+    downloadBtn.download = `Kubedoctor_${this.state.convId.slice(0, 8)}_report.md`;
+    downloadBtn.className = "report-download-btn";
+    downloadBtn.innerHTML = `📥 ${this.t("downloadReport") || "下载报告"}`;
+    holder.appendChild(downloadBtn);
+  },
+
   handleStreamEvent(evt, contentEl, assistantEl) {
     const type = evt.type;
     const content = evt.content || "";
+
+    if (type === "web_search") {
+      if (this.webSearchNote) this.webSearchNote.remove();
+      this.webSearchNote = document.createElement("div");
+      this.webSearchNote.style.cssText = "font-size:12px;color:var(--text-tertiary);padding:4px 0 8px;border-bottom:1px solid var(--border);margin-bottom:8px";
+      this.webSearchNote.textContent = "🌐 联网 (" + (evt.query || "") + ")" + (evt.content ? "：已接入检索结果" : "（无结果）");
+      contentEl.prepend(this.webSearchNote);
+      return;
+    }
 
     if (type === "conv_created") {
       this.state.convId = evt.conv_id;
@@ -1009,17 +1193,26 @@ const App = {
       return;
     }
 
-    // 工作流状态（进度条）
+    // 工作流状态（状态条 + 流程推进）
     if (type === "workflow_status") {
-      this.updateWorkflowProgress(contentEl, evt.stage, evt.message);
+      const idx = this.flowIndexForStage(evt.stage);
+      const st = EXEC_STAGE_TEXT[evt.stage] || evt.message || "正在处理...";
+      if (idx != null) {
+        this.setFlowStage(contentEl, idx);
+        if (evt.message && evt.message !== st && evt.message !== (EXEC_STAGE_TEXT[evt.stage] || "")) {
+          this.appendStep(contentEl, idx, evt.message);
+        }
+      }
+      this.setExecStatus(contentEl, st);
       return;
     }
 
     // 反馈循环重试
     if (type === "retry_loop") {
-      const title = `🔄 第${evt.loop}次重试`;
-      this.appendThinkingBlock(contentEl, "retry", title, evt.reason || "Observer 建议重试");
-      if (this._thinkingChain) this._thinkingChain.push({ cls: "retry", title, content: evt.reason || "Observer 建议重试" });
+      this.setFlowStage(contentEl, 3);
+      const rtext = evt.reason ? "第" + evt.loop + "次重试: " + evt.reason : "第" + evt.loop + "次重试";
+      this.appendStep(contentEl, 3, rtext);
+      this.setExecStatus(contentEl, this.t("resultObserve") || "正在检查执行结果");
       return;
     }
 
@@ -1039,90 +1232,70 @@ const App = {
       return;
     }
 
-    // 思考链：各 Agent 的推理过程
+    // 各阶段推理（根据 agent 推进流程）
     if (type === "reasoning" || type === "answer_reasoning") {
-      const agentName = evt.agent || "reporter";
-      const agentLabelMap = {
-        orchestrator: this.t("intentAnalysis"),
-        risk_assessor: this.t("riskAssessment"),
-        validator: this.t("commandGen"),
-        validator_retry: "命令修正",
-        observer: this.t("resultObserve"),
-        reporter: this.t("reportGen"),
-      };
-      const agentLabel = agentLabelMap[agentName] || agentName;
-      const title = `💭 ${this.t("thinking")} · ${agentLabel}`;
-      this.appendThinkingBlock(contentEl, "thought", title, content);
-      if (this._thinkingChain) this._thinkingChain.push({ cls: "thought", title, content });
+      const agentMap = { orchestrator:0, risk_assessor:1, validator:1, validator_retry:1, observer:3, reporter:4 };
+      const idx = agentMap[evt.agent];
+      if (idx != null) {
+        this.setFlowStage(contentEl, idx);
+        this.appendStep(contentEl, idx, content);
+      }
       return;
     }
 
-    // 任务计划
+    // 任务计划 → 意图识别
     if (type === "task_plan") {
+      this.setFlowStage(contentEl, 0);
       const text = typeof content === "string" ? content : JSON.stringify(content, null, 2);
-      const title = `📋 ${this.t("taskPlan")}`;
-      this.appendThinkingBlock(contentEl, "plan", title, text);
-      if (this._thinkingChain) this._thinkingChain.push({ cls: "plan", title, content: text });
+      this.appendStep(contentEl, 0, text);
       return;
     }
 
-    // 风险评估
-    if (type === "risk_assessment") {
+    // 风险评估 / 命令校验 → 风险校验
+    if (type === "risk_assessment" || type === "validation") {
+      this.setFlowStage(contentEl, 1);
       const text = typeof content === "string" ? content : JSON.stringify(content, null, 2);
-      const title = `⚠️ ${this.t("riskAssess")}`;
-      this.appendThinkingBlock(contentEl, "risk", title, text);
-      if (this._thinkingChain) this._thinkingChain.push({ cls: "risk", title, content: text });
+      this.appendStep(contentEl, 1, text);
       return;
     }
 
-    // 命令校验
-    if (type === "validation") {
-      const text = typeof content === "string" ? content : JSON.stringify(content, null, 2);
-      const title = `✅ ${this.t("cmdValidate")}`;
-      this.appendThinkingBlock(contentEl, "validation", title, text);
-      if (this._thinkingChain) this._thinkingChain.push({ cls: "validation", title, content: text });
-      return;
-    }
-
-    // 工具调用
+    // 工具调用 → 执行命令
     if (type === "tool_call") {
+      this.setFlowStage(contentEl, 2);
       const cmd = evt.command || content;
-      const title = `🔧 ${this.t("execCmd")} (${evt.tool || "execute_command"})`;
-      this.appendThinkingBlock(contentEl, "tool", title, cmd);
-      if (this._thinkingChain) this._thinkingChain.push({ cls: "tool", title, content: cmd });
+      this.appendStep(contentEl, 2, cmd);
       return;
     }
 
     // 工具结果
     if (type === "tool_result") {
-      const title = `📋 ${this.t("execResult")}`;
-      this.appendThinkingBlock(contentEl, "tool", title, content);
-      if (this._thinkingChain) this._thinkingChain.push({ cls: "tool", title, content });
+      // 执行了创建/删除等写操作后，若拓扑图打开则自动刷新
+      if (evt && evt.success && evt.command) {
+        this.refreshGraphAfterChange(evt.command);
+      }
+      const rtext = typeof content === "string" ? content : JSON.stringify(content);
+      if (rtext) this.appendStep(contentEl, 2, rtext);
       return;
     }
 
-    // 观察
+    // 观察 → 观察结果
     if (type === "observation") {
+      this.setFlowStage(contentEl, 3);
       const text = typeof content === "string" ? content : JSON.stringify(content, null, 2);
-      const title = `👁️ ${this.t("resultObs")}`;
-      this.appendThinkingBlock(contentEl, "observation", title, text);
-      if (this._thinkingChain) this._thinkingChain.push({ cls: "observation", title, content: text });
+      this.appendStep(contentEl, 3, text);
       return;
     }
 
     // 自动修复通知
     if (type === "auto_fix") {
-      const title = `🤖 ${this.t("autoFix") || "自动修复"}`;
-      this.appendThinkingBlock(contentEl, "auto-fix", title, content);
-      if (this._thinkingChain) this._thinkingChain.push({ cls: "auto-fix", title, content });
+      const reason = typeof content === "string" ? content : JSON.stringify(content);
+      this.appendStep(contentEl, 1, (this.t("autoFix") || "自动修复") + (reason ? ": " + reason : ""));
+      this.setExecStatus(contentEl, this.t("autoFix") || "自动修复中...");
       return;
     }
 
     // 用户选择已应用
     if (type === "user_choice_applied") {
-      const title = `✅ ${this.t("choiceApplied") || "已选择方案"}`;
-      this.appendThinkingBlock(contentEl, "choice-applied", title, content);
-      if (this._thinkingChain) this._thinkingChain.push({ cls: "choice-applied", title, content });
       return;
     }
 
@@ -1168,29 +1341,9 @@ const App = {
     }
 
     if (type === "done" || type === "end") {
-      // 流结束，立即折叠所有思考链
+      this.markExecComplete(contentEl);
+      this.attachDownloadButton(contentEl);
       this.collapseAllThinkingBlocks(contentEl);
-      // 添加报告下载按钮
-      if (this.state.convId) {
-        const answerArea = contentEl.querySelector(".answer-area");
-        const target = answerArea || contentEl;
-        const downloadBtn = document.createElement("a");
-        downloadBtn.href = `/chat/report/${encodeURIComponent(this.state.convId)}?user_id=${encodeURIComponent(this.state.userId)}`;
-        downloadBtn.download = `Kubedoctor_${this.state.convId.slice(0, 8)}_report.md`;
-        downloadBtn.className = "report-download-btn";
-        downloadBtn.style.cssText = `
-          display: inline-flex; align-items: center; gap: 6px;
-          margin-top: 12px; padding: 8px 16px;
-          background: var(--accent); color: #fff;
-          border-radius: 8px; text-decoration: none;
-          font-size: 13px; font-weight: 600;
-          transition: opacity 0.2s;
-        `;
-        downloadBtn.innerHTML = `📥 ${this.t("downloadReport") || "下载报告"}`;
-        downloadBtn.addEventListener("mouseenter", () => { downloadBtn.style.opacity = "0.85"; });
-        downloadBtn.addEventListener("mouseleave", () => { downloadBtn.style.opacity = "1"; });
-        target.appendChild(downloadBtn);
-      }
       return;
     }
   },
@@ -1691,6 +1844,13 @@ const App = {
     });
   },
 
+  toggleWebSearch() {
+    this.webSearch = !this.webSearch;
+    this.el.netBtn.classList.toggle("active", this.webSearch);
+    this.el.netBtn.title = this.webSearch ? "联网搜索（已开启）" : "联网搜索";
+    this.showToast(this.webSearch ? "🌐 已开启联网搜索" : "已关闭联网搜索");
+  },
+
   stopStream() {
     if (this.state.abortCtrl) {
       this.state.abortCtrl.abort();
@@ -1702,7 +1862,243 @@ const App = {
     this.el.stopBtn.style.display = on ? "" : "none";
   },
 
+  /* ───── 拓扑图 ───── */
+  async rebuildTopology() {
+    const btn = this.el.graphRefreshBtn;
+    const hint = this.el.graphRefreshHint;
+    if (!btn || btn.classList.contains("loading")) return;
+    try {
+      btn.classList.add("loading");
+      if (hint) hint.textContent = "正在从集群重建拓扑…";
+      const res = await fetch(`/graph/rebuild?user_id=${encodeURIComponent(this.state.userId)}`, { method: "POST" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (hint) hint.textContent = "重建完成：" + ((data && data.nodes) || data.created_edges || "OK");
+      await this.loadTopology();
+    } catch (e) {
+      if (hint) hint.textContent = "重建失败: " + e.message;
+      console.error(e);
+    } finally {
+      btn.classList.remove("loading");
+    }
+  },
+
+  openGraphPanel() {
+    this.el.graphPanel.classList.add("open");
+    this.loadTopology();
+    this.loadTopologyInterval();
+  },
+
+  async loadTopologyInterval() {
+    try {
+      const res = await fetch(`/graph/settings?user_id=${encodeURIComponent(this.state.userId)}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      const sec = data.interval_seconds || 300;
+      if (this.el.graphIntervalInput) this.el.graphIntervalInput.value = Math.max(1, Math.round(sec / 60));
+    } catch (e) { /* 忽略 */ }
+  },
+
+  async saveTopologyInterval() {
+    const input = this.el.graphIntervalInput;
+    if (!input) return;
+    let mins = parseInt(input.value, 10);
+    if (isNaN(mins) || mins < 1) mins = 5;
+    if (mins > 60) mins = 60;
+    const hint = this.el.graphRefreshHint;
+    try {
+      const res = await fetch(`/graph/settings?user_id=${encodeURIComponent(this.state.userId)}&interval_seconds=${mins * 60}`, { method: "POST" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      input.value = Math.round((data.interval_seconds || mins * 60) / 60);
+      if (hint) hint.textContent = `已设为每 ${Math.round((data.interval_seconds || mins * 60) / 60)} 分钟自动重建`;
+    } catch (e) {
+      if (hint) hint.textContent = "保存间隔失败: " + e.message;
+    }
+  },
+
+  closeGraphPanel() {
+    this.el.graphPanel.classList.remove("open");
+  },
+
+  async loadTopology() {
+    const btn = this.el.graphRefreshBtn;
+    try {
+      btn.classList.add("loading");
+      const res = await fetch(`/graph/topology?user_id=${encodeURIComponent(this.state.userId)}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      this._graphData = data;
+      this.renderGraph(data);
+    } catch (e) {
+      this.el.graphEmpty.style.display = "block";
+      this.el.graphEmpty.textContent = "加载拓扑失败: " + e.message;
+      this.el.graphCanvas.innerHTML = "";
+    } finally {
+      btn.classList.remove("loading");
+    }
+  },
+
+  renderGraphLegend() {
+    const el = this.el.graphLegend;
+    if (!el) return;
+    const groups = [
+      ["命名空间", "#3b82f6"],
+      ["工作负载", "#22c55e"],
+      ["Service", "#f59e0b"],
+      ["Pod", "#06b6d4"],
+    ];
+    el.innerHTML = groups.map((g) =>
+      `<span class="legend-item"><i style="background:${g[1]}"></i>${g[0]}</span>`
+    ).join("");
+  },
+
+  renderGraph(data) {
+    const canvas = this.el.graphCanvas;
+    const empty = this.el.graphEmpty;
+    const nodes = (data && data.nodes) ? data.nodes : [];
+    const links = (data && data.links) ? data.links : [];
+    if (this.el.graphPanelSub) {
+      this.el.graphPanelSub.textContent = `${nodes.length} 节点 · ${links.length} 关系`;
+    }
+    if (!nodes.length) {
+      canvas.innerHTML = "";
+      empty.style.display = "block";
+      empty.textContent = "暂无拓扑数据，先连接主机或让 AI 执行一些查询";
+      return;
+    }
+    empty.style.display = "none";
+    this.renderGraphLegend();
+
+    const COLOR = {
+      Namespace:"#3b82f6", Deployment:"#22c55e", StatefulSet:"#22c55e", DaemonSet:"#22c55e", Job:"#22c55e", CronJob:"#22c55e",
+      ReplicaSet:"#14b8a6", Pod:"#06b6d4", Service:"#f59e0b", Endpoints:"#f59e0b", Ingress:"#f59e0b",
+      ConfigMap:"#94a3b8", Secret:"#64748b", Role:"#f43f5e", ClusterRole:"#f43f5e",
+      RoleBinding:"#ec4899", ClusterRoleBinding:"#ec4899", ServiceAccount:"#a855f7", Group:"#d946ef", ClusterUser:"#e879f9",
+      PersistentVolumeClaim:"#a16207", PersistentVolume:"#92400e", StorageClass:"#b45309",
+    };
+    const REL_COLOR = {
+      BELONGS_TO:"#8b93a7", GRANTS:"#f43f5e", ASSIGNED_TO:"#ec4899", SELECTS:"#f59e0b",
+      EXPOSES:"#f59e0b", USES:"#94a3b8", DEPENDS_ON:"#94a3b8", RUNS_IN:"#3b82f6", RUNS_ON:"#3b82f6",
+    };
+    const color = (t) => COLOR[t] || "#6b7280";
+    const relColor = (r) => REL_COLOR[r] || "#8b93a7";
+
+    const depth = {};
+    nodes.forEach(n => { depth[n.id] = 0; });
+    for (let pass = 0; pass < 12; pass++) {
+      let changed = false;
+      for (const l of links) {
+        if ((l.rel === "BELONGS_TO" || l.rel === "BACKS") && depth[l.source] != null && depth[l.target] != null) {
+          if (depth[l.source] < depth[l.target] + 1) {
+            depth[l.source] = depth[l.target] + 1;
+            changed = true;
+          }
+        }
+      }
+      if (!changed) break;
+    }
+
+    const cols = {};
+    nodes.forEach(n => { const d = depth[n.id] || 0; (cols[d] = cols[d] || []).push(n); });
+    const depths = Object.keys(cols).map(Number).sort((a, b) => a - b);
+
+    const COLW = 190, ROWH = 70, NODEW = 156, NODEH = 34, PAD = 20;
+    const W = depths.length * COLW;
+    let maxRows = 1;
+    depths.forEach(d => { maxRows = Math.max(maxRows, cols[d].length); });
+    const H = Math.max(200, maxRows * ROWH);
+
+    const pos = {};
+    depths.forEach((d, ci) => {
+      const items = cols[d].slice().sort((a, b) => a.name.localeCompare(b.name));
+      const cx = PAD + ci * COLW;
+      items.forEach((n, ri) => {
+        let py = null, cnt = 0;
+        for (const l of links) {
+          if ((l.rel === "BELONGS_TO" || l.rel === "BACKS")) {
+            if (l.source === n.id && pos[l.target]) { py = (py||0) + pos[l.target].y; cnt++; }
+          }
+        }
+        let y;
+        if (py != null && cnt) {
+          y = Math.round(py / cnt);
+        } else {
+          y = PAD + ri * ROWH + (ROWH - NODEH) / 2;
+        }
+        y = Math.max(PAD, Math.min(H - NODEH - PAD, y));
+        pos[n.id] = { x: cx, y, cx: cx + NODEW / 2, cy: y + NODEH / 2 };
+      });
+      const sorted = items.slice().sort((a, b) => pos[a.id].y - pos[b.id].y);
+      let lastY = -1e9;
+      for (const n of sorted) {
+        if (pos[n.id].y < lastY + ROWH) pos[n.id].y = lastY + ROWH;
+        lastY = pos[n.id].y;
+        pos[n.id].cy = pos[n.id].y + NODEH / 2;
+      }
+    });
+
+    const svgNS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(svgNS, "svg");
+    svg.setAttribute("width", W + PAD * 2);
+    svg.setAttribute("height", H + PAD * 2);
+    svg.setAttribute("viewBox", `0 0 ${W + PAD * 2} ${H + PAD * 2}`);
+
+    for (const l of links) {
+      const a = pos[l.source], b = pos[l.target];
+      if (!a || !b) continue;
+      const line = document.createElementNS(svgNS, "line");
+      line.setAttribute("x1", a.cx); line.setAttribute("y1", a.cy);
+      line.setAttribute("x2", b.cx); line.setAttribute("y2", b.cy);
+      line.setAttribute("class", "g-edge");
+      line.setAttribute("stroke", relColor(l.rel));
+      if (l.rel === "BELONGS_TO") line.setAttribute("stroke-dasharray", "4 3");
+      svg.appendChild(line);
+      const lbl = document.createElementNS(svgNS, "text");
+      lbl.setAttribute("x", (a.cx + b.cx) / 2);
+      lbl.setAttribute("y", (a.cy + b.cy) / 2 - 3);
+      lbl.setAttribute("text-anchor", "middle");
+      lbl.setAttribute("class", "g-edge-label");
+      lbl.setAttribute("fill", relColor(l.rel));
+      lbl.textContent = l.rel;
+      svg.appendChild(lbl);
+    }
+
+    for (const n of nodes) {
+      const p = pos[n.id];
+      if (!p) continue;
+      const g = document.createElementNS(svgNS, "g");
+      g.setAttribute("class", "g-node");
+      g.setAttribute("transform", `translate(${p.x},${p.y})`);
+      const rect = document.createElementNS(svgNS, "rect");
+      rect.setAttribute("width", NODEW); rect.setAttribute("height", NODEH);
+      rect.setAttribute("rx", 6); rect.setAttribute("fill", color(n.type));
+      const title = document.createElementNS(svgNS, "title");
+      title.textContent = `${n.type} / ${n.name}`;
+      rect.appendChild(title);
+      const text = document.createElementNS(svgNS, "text");
+      text.setAttribute("x", NODEW / 2); text.setAttribute("y", NODEH / 2 + 4);
+      text.setAttribute("text-anchor", "middle");
+      text.textContent = n.name.length > 22 ? n.name.slice(0, 20) + "…" : n.name;
+      g.appendChild(rect); g.appendChild(text);
+      svg.appendChild(g);
+    }
+
+    canvas.innerHTML = "";
+    canvas.appendChild(svg);
+  },
+
+  refreshGraphAfterChange(commandStr) {
+    if (!this.el.graphPanel.classList.contains("open")) return;
+    const cmd = (commandStr || "").toLowerCase();
+    if (/create|apply|delete|scale|run|patch|edit|rollout|label|annotate|expose/.test(cmd)) {
+      clearTimeout(this._graphRefreshTimer);
+      this._graphRefreshTimer = setTimeout(() => this.rebuildTopology(), 400);
+    }
+  },
+
   /* ───── 文件 / 文档聊天 ───── */
+
   handleFile(e) {
     const file = e.target.files[0];
     if (!file) return;

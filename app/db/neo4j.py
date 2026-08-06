@@ -7,9 +7,7 @@ from typing import Optional
 from neo4j import AsyncGraphDatabase, AsyncDriver
 
 
-from dotenv import load_dotenv
-
-load_dotenv()  # Load environment variables from .env file
+from app.core.config import NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD
 
 
 class Neo4j:
@@ -19,11 +17,11 @@ class Neo4j:
 
         self,
 
-        uri: str = "bolt://localhost:7687",
+        uri: str = NEO4J_URI,
 
-        user: str = os.getenv("NEO4J_USER"),
+        user: str = NEO4J_USER,
 
-        password: str = os.getenv("NEO4J_PASSWORD"),
+        password: str = NEO4J_PASSWORD,
 
     ):
 

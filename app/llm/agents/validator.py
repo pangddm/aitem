@@ -20,6 +20,9 @@ VALIDATOR_PROMPT = """
 4. 如果是重启操作（restart），优先使用 kubectl rollout restart
 5. 命令必须安全，不能包含 rm, delete all 等危险操作
 6. 允许使用 kubectl delete pod <pod-name> 来重启单个 Pod（K8s 控制器会自动重建）
+7. 用户问"集群里有没有出故障的 Pod / 检查 Pod / 帮我看看有没有问题"这类诊断查询（通常未指定命名空间）→ 首条命令必须用 kubectl get pods -A -o wide（跨所有命名空间列出 Pod 以发现故障），不要用检查节点、kubelet 或节点代理的命令来回答 Pod 故障问题
+8. 当用户明确点名要删除/清理/重启具体资源（即使未指定 namespace 或包含多个名称）时，必须生成可执行的 kubectl 命令，禁止只输出风险说明而把 command 留空。未指定 namespace 时可用 -n default。
+9. 删除/重启多个资源时，可用 && 连接成一条命令，例如：kubectl delete deployment a -n default && kubectl delete deployment b -n default
 
 重要：处理资源名称缺失的情况
 - 如果用户意图是操作（operate）但 resource_name 为空，必须生成查询命令先获取资源列表
@@ -52,6 +55,12 @@ Kubernetes 操作转换规则：
 
 意图: {"intent": "operate", "task_type": "restart", "target": "pod", "resource_name": "nginx-xxx", "namespace": "default"}
 输出: {"command": "kubectl delete pod nginx-xxx -n default", "is_safe": true, "explanation": "删除 default 命名空间的 nginx-xxx Pod，控制器会自动重建"}
+
+意图: {"intent": "diagnose", "task_type": "get", "target": "pod", "resource_name": "", "namespace": ""}
+输出: {"command": "kubectl get pods -A -o wide", "is_safe": true, "explanation": "跨所有命名空间列出 Pod，找出处于故障状态的 Pod（Pending/CrashLoopBackOff/ImagePullBackOff 等），后续再决定修复方案"}
+
+意图: {"intent": "query", "task_type": "get", "target": "pod", "resource_name": "", "namespace": "default"}
+输出: {"command": "kubectl get pods -n default -o wide", "is_safe": true, "explanation": "列出 default 命名空间下的全部 Pod，用于发现故障"}
 """
 
 VALIDATOR_FEEDBACK_PROMPT = """
@@ -81,7 +90,19 @@ class Validator(BaseAgent):
     def __init__(self):
         super().__init__(name="validator")
 
-    async def generate_command(self, task_plan: dict) -> dict:
+    def _build_preference_hint(self, memories) -> str:
+        """从长期记忆中提取用户对工具/CLI 的偏好，用于命令生成"""
+        if not memories:
+            return ""
+        lines = "\n".join([f"- {m.content}" for m in memories[:5]])
+        return (
+            "\n\n用户偏好信息（来自长期记忆，生成命令时应遵循）：\n" + lines +
+            "\n提示：如果任务涉及容器/镜像/CLI 相关命令，请优先使用用户偏好的工具语法。"
+            "例如用户偏好 nerdctl 而不是 docker 时，容器相关命令使用 nerdctl 语法；"
+            "kubectl 等集群命令不受影响。不要生成与用户明确偏好相悖的容器工具命令。"
+        )
+
+    async def generate_command(self, task_plan: dict, memories: list = None) -> dict:
         """
         仅生成命令（用于并行执行），不包含安全校验
 
@@ -92,8 +113,9 @@ class Validator(BaseAgent):
                 "explanation": str,   # 命令说明
             }
         """
+        system_prompt = VALIDATOR_PROMPT + self._build_preference_hint(memories)
         result = await self.think_json_with_reasoning(
-            system_prompt=VALIDATOR_PROMPT,
+            system_prompt=system_prompt,
             user_message=f"意图: {task_plan}",
         )
 
@@ -112,6 +134,7 @@ class Validator(BaseAgent):
         previous_command: str,
         execution_output: str,
         observation_feedback: str,
+        memories: list = None,
     ) -> dict:
         """
         根据 Observer 反馈重新生成命令（反馈循环用）
@@ -132,8 +155,9 @@ Observer 反馈: {observation_feedback}
 请根据以上信息重新生成更合适的命令。
 """
 
+        system_prompt = VALIDATOR_FEEDBACK_PROMPT + self._build_preference_hint(memories)
         result = await self.think_json_with_reasoning(
-            system_prompt=VALIDATOR_FEEDBACK_PROMPT,
+            system_prompt=system_prompt,
             user_message=feedback_message,
         )
 
@@ -168,13 +192,13 @@ Observer 反馈: {observation_feedback}
                 "explanation": "测试模式：跳过安全校验",
             }
 
-        # critical 级别直接拦截
+        # critical 级别直接拦截：保留原命令，交由 workflow 弹确认窗让用户决定
         if risk_level == "critical":
             return {
-                "command": "",
+                "command": command,
                 "is_safe": False,
                 "is_blocked": True,
-                "explanation": "critical 级别风险，操作被拦截",
+                "explanation": "critical 级别风险，需用户确认后执行",
             }
 
         if not command:

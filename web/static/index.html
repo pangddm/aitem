@@ -4,7 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Kubedoctor - 智能运维助手</title>
-    <link rel="stylesheet" href="/static/style.css">
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="/static/style.css?v=20260806p">
 </head>
 <body>
     <!-- 侧边栏 -->
@@ -64,6 +65,15 @@
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
                         <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
+                    </svg>
+                </button>
+                <button class="topbar-btn" id="graphBtn" title="拓扑图">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="5" cy="6" r="2"></circle>
+                        <circle cx="19" cy="5" r="2"></circle>
+                        <circle cx="12" cy="18" r="2"></circle>
+                        <line x1="6.8" y1="7" x2="10.5" y2="16"></line>
+                        <line x1="17" y1="6.5" x2="13.5" y2="16.4"></line>
                     </svg>
                 </button>
                 <button class="topbar-btn" id="settingsBtn" title="设置">
@@ -138,6 +148,13 @@
                             <line x1="8" y1="23" x2="16" y2="23"></line>
                         </svg>
                     </button>
+                    <button class="composer-btn" id="netBtn" title="联网搜索">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="10"></circle>
+                            <line x1="2" y1="12" x2="22" y2="12"></line>
+                            <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
+                        </svg>
+                    </button>
                     <button class="send-btn" id="sendBtn" disabled>
                         <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
                             <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"></path>
@@ -149,8 +166,31 @@
                         </svg>
                     </button>
                 </div>
+                <div class="stream-hint" id="streamHint" style="display:none">✨ 正在生成回复… 可直接输入新消息并按回车打断</div>
                 <p class="composer-footer">Kubedoctor 可能会产生错误信息，请核实重要信息。</p>
             </div>
+        </div>
+
+        <!-- 拓扑图面板 -->
+        <div class="graph-panel" id="graphPanel">
+            <div class="graph-panel-header">
+                <span class="graph-panel-title">集群拓扑图</span>
+                <span class="graph-panel-sub" id="graphPanelSub"></span>
+                <button class="graph-panel-close" id="graphPanelClose" title="关闭">✕</button>
+            </div>
+            <div class="graph-refresh-row">
+                <button class="graph-refresh-btn" id="graphRefreshBtn">刷新(重建)</button>
+                <span class="graph-refresh-hint" id="graphRefreshHint">点击立即从集群重建拓扑 · 亦可定时自动更新</span>
+            </div>
+            <div class="graph-interval-row">
+                <label for="graphIntervalInput">自动重建间隔</label>
+                <input type="number" id="graphIntervalInput" min="1" max="60" step="1" value="5">
+                <span>分钟</span>
+                <button class="graph-refresh-btn" id="graphIntervalSave">保存</button>
+            </div>
+            <div class="graph-canvas" id="graphCanvas"></div>
+            <div class="graph-empty" id="graphEmpty" style="display:none">暂无拓扑数据，先连接主机或让 AI 执行一些查询</div>
+            <div class="graph-legend" id="graphLegend"></div>
         </div>
     </main>
 
@@ -267,6 +307,6 @@
         </div>
     </div>
 
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=20260806u"></script>
 </body>
 </html>

@@ -9,3 +9,8 @@ data/redis/
 data/mysql/
 data/
 .continue/
+.github/
+pytest.ini
+docs
+tests
+scripts

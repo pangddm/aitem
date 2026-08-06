@@ -31,6 +31,8 @@ requires_execution 规则：
   （因为需要执行 kubectl 命令获取真实数据）
 - 需要执行操作（重启、删除、创建、修改、扩容等）→ requires_execution: true
 - 诊断问题（排查、修复、解决等）→ requires_execution: true
+- 询问之前的对话/历史、回忆或确认（如"我上一个问题是什么"、"我之前问了什么"、"刚才那条命令是什么"、"我们聊过什么"、"这句话是什么意思"）→ requires_execution: false
+  （这只是回顾/确认对话内容，不针对当前集群做任何查询或操作，绝不能执行任何命令）
 - 理论知识、闲聊、解释概念（什么是、Kubernetes 是什么等）→ requires_execution: false
 
 示例：
@@ -51,6 +53,15 @@ requires_execution 规则：
 
 用户: "什么是 Deployment"
 输出: {"intent": "query", "task_type": "other", "target": "unknown", "resource_name": "", "namespace": "", "description": "询问 Kubernetes 理论知识", "requires_execution": false}
+
+用户: "我上一个问题是什么"
+输出: {"intent": "query", "task_type": "other", "target": "unknown", "resource_name": "", "namespace": "", "description": "回顾上一个问题是什么", "requires_execution": false}
+
+用户: "之前那条命令是什么"
+输出: {"intent": "query", "task_type": "other", "target": "unknown", "resource_name": "", "namespace": "", "description": "回顾之前执行过什么命令", "requires_execution": false}
+
+用户: "我们刚才聊了什么"
+输出: {"intent": "query", "task_type": "other", "target": "unknown", "resource_name": "", "namespace": "", "description": "回顾刚才的对话内容", "requires_execution": false}
 
 用户: "帮我看看集群状态"
 输出: {"intent": "query", "task_type": "get", "target": "node", "resource_name": "", "namespace": "", "description": "查看集群整体状态", "requires_execution": true}

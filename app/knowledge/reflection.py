@@ -14,6 +14,7 @@ from app.knowledge.repository.incident_repository import (
     IncidentRepository,
 )
 from app.prompt.knowledge_prompt import REFLECTION_PROMPT
+from app.core.config import EXTRACT_MODEL
 
 
 class ReflectionService:
@@ -23,7 +24,7 @@ class ReflectionService:
         llm_client,
         embedding_service: EmbeddingService,
         incident_repository: IncidentRepository,
-        model: str = "deepseek-v4-flash",
+        model: str = EXTRACT_MODEL,
     ):
         self.client = llm_client
         self.embedding_service = embedding_service
@@ -36,7 +37,7 @@ class ReflectionService:
         user_question: str,
         final_answer: str,
         tool_history: list[dict],
-        owner: str = "default",
+        owner: str,
     ) -> Incident | None:
 
         if not tool_history:

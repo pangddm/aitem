@@ -8,6 +8,8 @@ from app.core.config import (
     POSTGRES_USER,
     POSTGRES_PASSWORD,
     POSTGRES_DB,
+    POSTGRES_POOL_MIN,
+    POSTGRES_POOL_MAX,
 )
 import json
 
@@ -83,4 +85,6 @@ postgres = Postgres(
     user=POSTGRES_USER,
     password=POSTGRES_PASSWORD,
     database=POSTGRES_DB,
+    min_size=POSTGRES_POOL_MIN,
+    max_size=POSTGRES_POOL_MAX,
 )
