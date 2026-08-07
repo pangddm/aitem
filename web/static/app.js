@@ -252,6 +252,8 @@ const App = {
       "graphRefreshHint", "graphIntervalInput", "graphIntervalSave",
       "graphCollapseTab", "graphFloatBall", "graphReopenTab",
       "graphZoomIn", "graphZoomOut", "graphZoomReset", "graphZoomLabel",
+      "graphFullBtn", "graphOverlay", "graphOverlayCanvas", "graphOverlayClose", "graphOverlayLegend",
+      "graphOverlayZoomIn", "graphOverlayZoomOut", "graphOverlayZoomFit", "graphOverlayZoomLabel",
     ];
     ids.forEach((id) => { this.el[id] = document.getElementById(id); });
     this.welcomeTpl = this.el.welcomeScreen ? this.el.welcomeScreen.outerHTML : "";
@@ -524,6 +526,25 @@ const App = {
 
     // 拓扑图（悬浮球作为常驻入口）
     this.el.graphPanelClose.addEventListener("click", () => this.closeGraphPanel());
+    if (this.el.graphFullBtn) this.el.graphFullBtn.addEventListener("click", () => this.openGraphFull());
+    if (this.el.graphOverlayClose) this.el.graphOverlayClose.addEventListener("click", () => this.closeGraphFull());
+    if (this.el.graphOverlayZoomIn) this.el.graphOverlayZoomIn.addEventListener("click", () => this.stepGraphOverlayZoom(0.2));
+    if (this.el.graphOverlayZoomOut) this.el.graphOverlayZoomOut.addEventListener("click", () => this.stepGraphOverlayZoom(-0.2));
+    if (this.el.graphOverlayZoomFit) this.el.graphOverlayZoomFit.addEventListener("click", () => this.fitGraphOverlay());
+    if (this.el.graphOverlayCanvas) {
+      this.el.graphOverlayCanvas.addEventListener("wheel", (e) => {
+        e.preventDefault();
+        this.stepGraphOverlayZoom(e.deltaY < 0 ? 0.1 : -0.1);
+      }, { passive: false });
+    }
+    if (this.el.graphOverlay) {
+      this.el.graphOverlay.addEventListener("click", (e) => { if (e.target === this.el.graphOverlay) this.closeGraphFull(); });
+    }
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && this.el.graphOverlay && this.el.graphOverlay.classList.contains("open")) {
+        this.closeGraphFull();
+      }
+    });
     this.el.graphRefreshBtn.addEventListener("click", () => this.rebuildTopology());
     this.el.graphIntervalSave.addEventListener("click", () => this.saveTopologyInterval());
     // 面板边缘折叠箭头 -> 收起为悬浮球（展开靠悬浮球）
@@ -1963,6 +1984,64 @@ const App = {
     this.popFloatBall();
   },
 
+  openGraphFull() {
+    const ov = this.el.graphOverlay;
+    if (!ov) return;
+    ov.style.display = "flex";
+    ov.classList.add("open");
+    this._graphOverlayZoom = null;
+    if (this._graphData) {
+      this.renderGraph(this._graphData, { fit: true });
+    } else {
+      this.loadTopology();
+    }
+  },
+
+  closeGraphFull() {
+    const ov = this.el.graphOverlay;
+    if (!ov) return;
+    ov.style.display = "none";
+    ov.classList.remove("open");
+    if (this._graphData && this.el.graphPanel && this.el.graphPanel.classList.contains("open")) {
+      this.renderGraph(this._graphData);
+    }
+  },
+
+  setGraphOverlayZoom(z) {
+    this._graphOverlayZoom = Math.max(0.1, Math.min(4, z));
+    this.applyOverlayGraphZoom();
+  },
+
+  stepGraphOverlayZoom(delta) {
+    const cur = this._graphOverlayZoom != null ? this._graphOverlayZoom : 1;
+    this.setGraphOverlayZoom(Math.round((cur + delta) * 100) / 100);
+  },
+
+  fitGraphOverlay() {
+    if (this._graphOverlayFitScale != null) {
+      this._graphOverlayZoom = this._graphOverlayFitScale;
+      this.applyOverlayGraphZoom();
+    }
+  },
+
+  applyOverlayGraphZoom() {
+    const z = this._graphOverlayZoom != null ? this._graphOverlayZoom : 1;
+    if (this.el.graphOverlayZoomLabel) this.el.graphOverlayZoomLabel.textContent = Math.round(z * 100) + "%";
+    const svg = this._graphOverlaySvg, g = this._graphOverlayG;
+    if (!svg || !g) return;
+    const bw = this._graphOverlayBaseW || 1, bh = this._graphOverlayBaseH || 1;
+    svg.setAttribute("width", Math.round(bw * z));
+    svg.setAttribute("height", Math.round(bh * z));
+    g.setAttribute("transform", `scale(${z})`);
+    g.setAttribute("transform-origin", "0 0");
+  },
+  _renderActive(data) {
+    if (this.el.graphOverlay && this.el.graphOverlay.classList.contains("open")) {
+      this.renderGraph(data, { fit: true });
+    } else {
+      this.renderGraph(data);
+    }
+  },
     popFloatBall() {
     const ball = this.el.graphFloatBall;
     if (!ball) return;
@@ -2041,7 +2120,12 @@ const App = {
   toggleGraphCollapse(id) {
     const set = this._graphCollapsed = this._graphCollapsed || new Set();
     if (set.has(id)) set.delete(id); else set.add(id);
-    if (this._graphData) this.renderGraph(this._graphData);
+    if (this._graphData) {
+      this.renderGraph(this._graphData);
+      if (this.el.graphOverlay && this.el.graphOverlay.classList.contains("open")) {
+        this.renderGraph(this._graphData, { fit: true });
+      }
+    }
   },
 
   setGraphZoom(z) {
@@ -2075,7 +2159,7 @@ const App = {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       this._graphData = data;
-      this.renderGraph(data);
+      this._renderActive(data);
     } catch (e) {
       this.el.graphEmpty.style.display = "block";
       this.el.graphEmpty.textContent = "加载拓扑失败: " + e.message;
@@ -2104,8 +2188,10 @@ const App = {
     ).join("");
   },
 
-  renderGraph(data) {
-    const canvas = this.el.graphCanvas;
+  renderGraph(data, opts) {
+    const O = opts || {};
+    const fitMode = !!O.fit;
+    const canvas = O.canvas || (fitMode ? this.el.graphOverlayCanvas : this.el.graphCanvas);
     const empty = this.el.graphEmpty;
     let nodes = (data && data.nodes) ? data.nodes : [];
     let links = (data && data.links) ? data.links : [];
@@ -2229,12 +2315,18 @@ const App = {
 
     const svgNS = "http://www.w3.org/2000/svg";
     const svg = document.createElementNS(svgNS, "svg");
-    this._graphBaseW = W + PAD * 2;
-    this._graphBaseH = H + PAD * 2;
+    // 以实际节点包围盒为准（而非公式 H），避免折叠/布局后节点被裁掉一半
+    let bboxW = W + PAD * 2, bboxH = H + PAD * 2;
+    Object.keys(pos).forEach((id) => {
+      const p = pos[id];
+      bboxW = Math.max(bboxW, p.x + NODEW + PAD);
+      bboxH = Math.max(bboxH, p.y + NODEH + PAD);
+    });
+    this._graphBaseW = bboxW;
+    this._graphBaseH = bboxH;
     const zoomG = document.createElementNS(svgNS, "g");
     svg.appendChild(zoomG);
-    this._graphSvg = svg;
-    this._graphG = zoomG;
+    if (!fitMode) { this._graphSvg = svg; this._graphG = zoomG; }
 
     // 按层级绘制分栏背景，增强层次感
     depths.forEach((d, ci) => {
@@ -2323,8 +2415,26 @@ const App = {
       zoomG.appendChild(g);
     }
 
-    this._graphZoom = (this._graphZoom != null) ? this._graphZoom : 1;
-    this.applyGraphZoom();
+    if (fitMode) {
+      const cw = canvas.clientWidth || (canvas.parentElement ? canvas.parentElement.clientWidth : 0) || 900;
+      const ch = canvas.clientHeight || (canvas.parentElement ? canvas.parentElement.clientHeight : 0) || 600;
+      const baseW = this._graphBaseW || 1, baseH = this._graphBaseH || 1;
+      const fit = Math.max(0.1, Math.min(cw / baseW, ch / baseH));
+      this._graphOverlayBaseW = baseW;
+      this._graphOverlayBaseH = baseH;
+      this._graphOverlaySvg = svg;
+      this._graphOverlayG = zoomG;
+      this._graphOverlayFitScale = fit;
+      if (this._graphOverlayZoom == null) this._graphOverlayZoom = fit;
+      this.applyOverlayGraphZoom();
+      if (this.el.graphOverlayLegend && this.el.graphLegend) {
+        this.el.graphOverlayLegend.innerHTML = this.el.graphLegend.innerHTML;
+        this.el.graphOverlayLegend.style.display = "flex";
+      }
+    } else {
+      this._graphZoom = (this._graphZoom != null) ? this._graphZoom : 1;
+      this.applyGraphZoom();
+    }
     canvas.innerHTML = "";
     canvas.appendChild(svg);
   },
@@ -2875,6 +2985,18 @@ const App = {
     // 列表
     html = html.replace(/^- (.+)$/gm, '<li>$1</li>');
     html = html.replace(/(<li>[\s\S]*?<\/li>)/g, '<ul>$1</ul>');
+    // Markdown 表格 → 优化后的 HTML 表格（.table-wrap）
+    html = html.replace(
+      /(^|\n)\s*((?:\|[^\n]*\|)[ \t]*\n[ \t]*\|[\s:|-]+\|[ \t]*(?:\n[ \t]*\|[^\n]*\|)+)/g,
+      (m, lead, blockLines) => {
+        const rows = blockLines.split("\n").map((s) => s.trim()).filter((l) => l.startsWith("|") && l.endsWith("|"));
+        if (rows.length < 3) return m;
+        const cell = (row) => row.split("|").slice(1, -1).map((c) => c.trim().replace(/<br\s*\/?>/g, " "));
+        const thead = "<thead><tr>" + cell(rows[0]).map((c) => `<th>${c}</th>`).join("") + "</tr></thead>";
+        const tbody = "<tbody>" + rows.slice(2).map((r) => "<tr>" + cell(r).map((c) => `<td>${c}</td>`).join("") + "</tr>").join("") + "</tbody>";
+        return (lead || "") + "<div class=\"table-wrap\"><table>" + thead + tbody + "</table></div>";
+      }
+    );
     // 换行
     html = html.replace(/\n/g, '<br>');
     return html;

@@ -1579,3 +1579,47 @@ body.dark .composer-inner { box-shadow: 0 4px 20px rgba(0,0,0,.25); }
   transition: background 0.2s, color 0.2s;
 }
 .exec-box-toggle:hover { background: var(--sidebar-hover); color: var(--text-primary); }
+/* 拓扑图全局观看（全屏） */
+.graph-full-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  border: none; border-radius: 8px; padding: 5px 10px;
+  cursor: pointer; font-size: 12px; font-weight: 600; color: #fff;
+  background: linear-gradient(135deg, #7c3aed, #0ea5e9);
+  box-shadow: 0 2px 8px rgba(124,58,237,.35);
+  white-space: nowrap; flex-shrink: 0;
+}
+.graph-full-btn:hover { filter: brightness(1.12); box-shadow: 0 3px 10px rgba(124,58,237,.45); }
+.graph-full-btn svg { width: 14px; height: 14px; }
+.graph-full-btn span { line-height: 1; }
+
+.graph-overlay {
+  position: fixed; inset: 0; z-index: 2000;
+  background: rgba(8,10,16,0.82); backdrop-filter: blur(6px);
+  flex-direction: column; color: var(--text, #eee);
+}
+.graph-overlay.open { display: flex; }
+.graph-overlay-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 18px; border-bottom: 1px solid rgba(127,127,127,0.25);
+  background: rgba(16,18,28,0.92);
+}
+.graph-overlay-title { font-size: 15px; font-weight: 700; }
+.graph-overlay-close {
+  border: 1px solid rgba(127,127,127,0.4); background: transparent; color: inherit;
+  border-radius: 6px; padding: 6px 14px; cursor: pointer; font-size: 13px;
+}
+.graph-overlay-close:hover { background: rgba(127,127,127,0.18); }
+.graph-overlay-canvas {
+  flex: 1; overflow: auto; padding: 18px;
+  display: flex; align-items: safe center; justify-content: safe center;
+}
+.graph-overlay-canvas svg { display: block; margin: 0; }
+.graph-overlay-legend {
+  padding: 10px 18px; border-top: 1px solid rgba(127,127,127,0.2);
+  display: flex; flex-wrap: wrap; gap: 10px; font-size: 12px; color: var(--muted,#bbb);
+}
+.graph-overlay-legend .legend-item { display: inline-flex; align-items: center; gap: 5px; }
+
+.graph-overlay-zoom {
+  display: flex; align-items: center; gap: 6px;
+}

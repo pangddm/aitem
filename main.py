@@ -3,7 +3,7 @@ import asyncio
 from app.db.init_db import init_database,init_mysql
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from app.db.postgres import postgres
 from app.db.neo4j import neo4j
@@ -202,6 +202,68 @@ app.mount("/static", StaticFiles(directory="web/static"), name="static")
 async def root():
     """返回前端首页"""
     return FileResponse("web/static/index.html")
+
+async def _db_health_checks():
+    """应用 + 各数据库连通性检查。返回 (checks, ok)。"""
+    from sqlalchemy import text as _text
+    from app.db.redis import redis_client as _redis
+    checks: dict[str, str] = {}
+    def _ck(name: str, ok: bool):
+        checks[name] = "ok" if ok else "error"
+    try:
+        await postgres.pool.fetchval("SELECT 1")
+        _ck("postgres", True)
+    except Exception as e:
+        _ck("postgres", False); checks["postgres"] = f"error: {type(e).__name__}: {e}"
+    try:
+        from app.db.mysql.database import engine as _engine
+        with _engine.connect() as _conn:
+            _conn.execute(_text("SELECT 1"))
+        _ck("mysql", True)
+    except Exception as e:
+        _ck("mysql", False); checks["mysql"] = f"error: {type(e).__name__}: {e}"
+    try:
+        _ck("redis", bool(_redis.ping()))
+    except Exception as e:
+        _ck("redis", False); checks["redis"] = f"error: {type(e).__name__}: {e}"
+    try:
+        async with neo4j.get_driver().session() as _s:
+            await _s.run("RETURN 1")
+        _ck("neo4j", True)
+    except Exception as e:
+        _ck("neo4j", False); checks["neo4j"] = f"error: {type(e).__name__}: {e}"
+    return checks, all(v == "ok" for v in checks.values())
+
+
+@app.get("/health")
+async def health():
+    """轻量就绪检查：应用 + 4 个数据库是否可用（不校验集群 SSH）。"""
+    checks, ok = await _db_health_checks()
+    return JSONResponse(
+        content={"status": "ok" if ok else "degraded", "checks": checks},
+        status_code=200 if ok else 503,
+    )
+
+
+@app.get("/health/ops")
+async def health_ops():
+    """完整就绪检查：应用 + 数据库 + 目标集群 SSH/kubectl 冒烟测试。"""
+    from app.tools.ssh_client import execute_command as _exec
+    from app.core.config import TARGET_HOST
+    checks, ok = await _db_health_checks()
+    try:
+        out = await asyncio.to_thread(_exec, "kubectl get nodes --no-headers 2>&1 | head -10")
+        checks["cluster"] = "ok"
+        checks["cluster_sample"] = "\n".join(out.splitlines()[:3])
+    except Exception as e:
+        checks["cluster"] = f"error: {type(e).__name__}: {e}"
+        checks["target"] = TARGET_HOST
+        ok = False
+    return JSONResponse(
+        content={"status": "ok" if ok else "degraded", "checks": checks},
+        status_code=200 if ok else 503,
+    )
+
 
 # 🌟 注册路由
 app.include_router(chat_router)

@@ -107,7 +107,12 @@ def _start_cleaner():
 _start_cleaner()
 
 
-def execute_command(command: str, host: str = None, port: int = None, username: str = None, password: str = None):
+def execute_command(command: str, host: str = None, port: int = None, username: str = None, password: str = None, _retried: bool = False):
+    """在目标主机上执行命令。
+
+    说明：仅对【建立连接/取连接】阶段失败自动重试一次（此时命令尚未下发，可安全重试）；
+    连接成功后的真正执行阶段不做重试，避免 kubectl delete/apply 等写操作被重复下发。
+    """
     timeout = SSH_TIMEOUT
 
     _host = host or HOST
@@ -115,26 +120,43 @@ def execute_command(command: str, host: str = None, port: int = None, username: 
     _username = username or USERNAME
     _password = password or PASSWORD
 
+    def _drop():
+        key = _pool_key(_host, _port, _username)
+        with _pool_lock:
+            if key in _ssh_pool:
+                try:
+                    _ssh_pool[key]["ssh"].close()
+                except Exception:
+                    pass
+                del _ssh_pool[key]
+
+    # 阶段一：建立/获取连接（失败可安全重试一次）
     ssh = None
     try:
         ssh = _get_cached_ssh(_host, _port, _username, _password, timeout)
+    except Exception as e:
+        try:
+            _drop()
+        except Exception:
+            pass
+        if not _retried:
+            time.sleep(1)
+            return execute_command(
+                command, host=host, port=port, username=username, password=password, _retried=True
+            )
+        raise RuntimeError(f"SSH 执行失败: {str(e)}")
+
+    # 阶段二：真正执行命令（连接已建立，不再重试）
+    try:
         stdin, stdout, stderr = ssh.exec_command(command, timeout=timeout)
         result = stdout.read().decode()
         error = stderr.read().decode()
-
         if error:
             return f"STDERR: {error}\nSTDOUT: {result}" if result else error
         return result
-
     except Exception as e:
-        # 连接失败时从池中移除
-        if ssh:
-            key = _pool_key(_host, _port, _username)
-            with _pool_lock:
-                if key in _ssh_pool:
-                    try:
-                        _ssh_pool[key]["ssh"].close()
-                    except Exception:
-                        pass
-                    del _ssh_pool[key]
+        try:
+            _drop()
+        except Exception:
+            pass
         raise RuntimeError(f"SSH 执行失败: {str(e)}")

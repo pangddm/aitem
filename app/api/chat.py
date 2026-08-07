@@ -16,7 +16,6 @@ from app.knowledge.factory import knowledge_factory
 from app.llm.agents import AgentWorkflow
 
 router = APIRouter()
-print("chat router loaded")
 
 UPLOAD_DIR = "./data/uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -672,6 +671,7 @@ async def download_report(conv_id: str, user_id: str = Query(...)):
     """
     from fastapi.responses import Response
     from datetime import datetime
+    from app.db.repository.conversation_repository import conversation_repo
     
     try:
         # 从 PostgreSQL 获取对话消息
@@ -797,17 +797,20 @@ async def download_report(conv_id: str, user_id: str = Query(...)):
         
         report_content = "\n".join(md_lines)
         
-        # 返回 Markdown 文件
+        # 转为 Word 文档
+        from app.services.docx_export import markdown_to_docx
+        docx_buf = markdown_to_docx(report_content)
+
         # 文件名只保留 ASCII 安全字符，避免 Content-Disposition header 编码错误
         import re as _re
         safe_title = _re.sub(r'[^\w\-]', '_', title)[:30]
-        filename = f"Kubedoctor_{safe_title}_{safe_now}.md"
+        filename = f"Kubedoctor_{safe_title}_{safe_now}.docx"
         # 使用 RFC 5987 编码处理非 ASCII 文件名
         from urllib.parse import quote
         encoded_filename = quote(filename)
         return Response(
-            content=report_content,
-            media_type="text/markdown; charset=utf-8",
+            content=docx_buf.getvalue(),
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             headers={
                 "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
             },
@@ -815,3 +818,4 @@ async def download_report(conv_id: str, user_id: str = Query(...)):
     except Exception as e:
         traceback.print_exc()
         return {"success": False, "message": f"生成报告失败: {str(e)}"}
+

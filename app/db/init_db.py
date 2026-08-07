@@ -48,6 +48,8 @@ def init_mysql():
 # PostgreSQL（统一持久化主库）
 # ==========================================================
 
+# 多 worker 串行化建表的咨询锁 key（任意固定整数）
+_INIT_LOCK_KEY = 727201803
 async def init_database(
     pool: asyncpg.Pool,
 ):
@@ -59,7 +61,12 @@ async def init_database(
         # pgvector 扩展
         await conn.execute("CREATE EXTENSION IF NOT EXISTS vector;")
 
-        # 创建所有表
-        await create_all_schema(conn)
+        # 多 worker 启动时会并发执行 DDL；用会话级咨询锁串行化，
+        # 避免 CREATE TRIGGER / INDEX 等并发竞态导致 DuplicateObjectError
+        await conn.execute("SELECT pg_advisory_lock($1)", _INIT_LOCK_KEY)
+        try:
+            await create_all_schema(conn)
+        finally:
+            await conn.execute("SELECT pg_advisory_unlock($1)", _INIT_LOCK_KEY)
 
     print("PostgreSQL initialized.")

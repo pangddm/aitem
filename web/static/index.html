@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Kubedoctor - 智能运维助手</title>
     <link rel="icon" href="data:,">
-    <link rel="stylesheet" href="/static/style.css?v=20260810q">
+    <link rel="stylesheet" href="/static/style.css?v=20260807d">
 </head>
 <body>
     <!-- 侧边栏 -->
@@ -168,6 +168,10 @@
             <div class="graph-panel-header">
                 <span class="graph-panel-title">集群拓扑图</span>
                 <span class="graph-panel-sub" id="graphPanelSub"></span>
+                <button class="graph-full-btn" id="graphFullBtn" title="全局观看：全屏展示整张拓扑图">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10V4h6"/><path d="M14 4h6v6"/><path d="M20 14v6h-6"/><path d="M10 20H4v-6"/></svg>
+                    <span>全局观看</span>
+                </button>
                 <button class="graph-panel-close" id="graphPanelClose" title="关闭">✕</button>
             </div>
             <div class="graph-refresh-row">
@@ -190,6 +194,22 @@
             <div class="graph-canvas" id="graphCanvas"></div>
             <div class="graph-empty" id="graphEmpty" style="display:none">暂无拓扑数据，先连接主机或让 AI 执行一些查询</div>
             <div class="graph-legend" id="graphLegend"></div>
+        </div>
+
+        <!-- 拓扑图全局观看（全屏） -->
+        <div class="graph-overlay" id="graphOverlay" style="display:none">
+            <div class="graph-overlay-head">
+                <span class="graph-overlay-title">集群拓扑图 · 全局观看</span>
+                <div class="graph-overlay-zoom">
+                    <button class="graph-zoom-btn" id="graphOverlayZoomOut" title="缩小">−</button>
+                    <span class="graph-zoom-label" id="graphOverlayZoomLabel">100%</span>
+                    <button class="graph-zoom-btn" id="graphOverlayZoomIn" title="放大">＋</button>
+                    <button class="graph-zoom-btn" id="graphOverlayZoomFit" title="适应全图">适应</button>
+                </div>
+                <button class="graph-overlay-close" id="graphOverlayClose">关闭 ✕</button>
+            </div>
+            <div class="graph-overlay-canvas" id="graphOverlayCanvas"></div>
+            <div class="graph-overlay-legend" id="graphOverlayLegend"></div>
         </div>
 
         <!-- 折叠后可见的展开把手（仅面板收起时显示） -->
@@ -319,6 +339,6 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=20260810q"></script>
+    <script src="/static/app.js?v=20260807d"></script>
 </body>
 </html>
