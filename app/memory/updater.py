@@ -96,6 +96,9 @@ class MemoryUpdater:
 
     async def _sync_neo4j(self, memory: Memory, action: str) -> None:
         """同步 Memory 到 Neo4j，失败时标记 sync_failed"""
+        from app.core.config import NEO4J_WRITE_ENABLED
+        if not NEO4J_WRITE_ENABLED:
+            return
         try:
             if action == "insert":
                 await self.graph_repository.insert_memory_graph(memory)

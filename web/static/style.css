@@ -1269,20 +1269,21 @@ body.dark .composer-inner { box-shadow: 0 4px 20px rgba(0,0,0,.25); }
 .graph-panel {
   position: fixed;
   top: 0;
-  right: 0;
   height: 100vh;
   width: min(460px, 92vw);
   background: var(--sidebar-bg, #1e1e28);
-  border-left: 1px solid rgba(127,127,127,0.25);
   box-shadow: -8px 0 24px rgba(0,0,0,0.35);
   transform: translateX(105%);
-  transition: transform .25s ease;
+  transition: transform .32s cubic-bezier(.22,.61,.36,1);
   z-index: 1200;
   display: flex;
   flex-direction: column;
   color: var(--text, #eee);
 }
+.graph-panel.from-right { right: 0; left: auto; border-left: 1px solid rgba(127,127,127,0.25); transform: translateX(105%); }
+.graph-panel.from-left  { left: 0; right: auto; border-right: 1px solid rgba(127,127,127,0.25); transform: translateX(105%); }
 .graph-panel.open { transform: translateX(0); }
+
 .graph-panel-header {
   display: flex;
   align-items: center;
@@ -1297,6 +1298,84 @@ body.dark .composer-inner { box-shadow: 0 4px 20px rgba(0,0,0,.25); }
   background: transparent; color: inherit; cursor: pointer; font-size: 14px;
 }
 .graph-panel-close:hover { background: rgba(127,127,127,0.2); }
+
+.graph-collapse-tab {
+  position: absolute; left: -20px; top: 50%; transform: translateY(-50%);
+  width: 20px; height: 74px;
+  background: linear-gradient(180deg, rgba(99,102,241,.55), rgba(59,130,246,.55));
+  color: #fff; backdrop-filter: blur(4px);
+  border: 1px solid rgba(255,255,255,0.35); border-right: none;
+  border-radius: 10px 0 0 10px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 22px; cursor: pointer; z-index: 5;
+  box-shadow: -2px 0 8px rgba(0,0,0,0.25);
+  transition: background .15s ease, filter .15s ease;
+}
+.graph-collapse-tab:hover { filter: brightness(1.18); }
+.graph-panel.from-left .graph-collapse-tab { left: auto; right: -20px; border-radius: 0 10px 10px 0; border-left: none; border-right: 1px solid rgba(127,127,127,0.35); box-shadow: 2px 0 8px rgba(0,0,0,0.25); }
+
+.graph-reopen-tab {
+  position: fixed; top: 50%; width: 20px; height: 74px;
+  background: linear-gradient(180deg, rgba(99,102,241,.55), rgba(59,130,246,.55));
+  color: #fff; backdrop-filter: blur(4px);
+  border: 1px solid rgba(255,255,255,0.35); border-right: none;
+  border-radius: 10px 0 0 10px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 22px; cursor: pointer; z-index: 1290;
+  box-shadow: -2px 0 8px rgba(0,0,0,0.25);
+  transition: background .15s ease, filter .15s ease;
+}
+.graph-reopen-tab:hover { filter: brightness(1.18); }
+
+.graph-floatball {
+  position: fixed; right: 18px; bottom: 96px;
+  width: 56px; height: 56px; border-radius: 50%;
+  background: linear-gradient(135deg, #7c3aed, #0ea5e9);
+  color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid rgba(255,255,255,0.35);
+  box-shadow: 0 6px 18px rgba(0,0,0,0.45);
+  cursor: grab; z-index: 1300;
+  user-select: none; -webkit-user-select: none;
+  touch-action: none;
+  transition: transform .15s ease, box-shadow .15s ease;
+}
+.graph-floatball:hover { transform: scale(1.06); box-shadow: 0 8px 22px rgba(0,0,0,0.5); }
+.graph-floatball:active { cursor: grabbing; }
+.graph-floatball svg { pointer-events: none; }
+
+/* 命名空间/资源折叠按钮 */
+.g-collapse { cursor: pointer; pointer-events: all; }
+.g-collapse circle { transition: fill .15s, r .15s; }
+.g-collapse:hover circle { fill: rgba(59,130,246,1); }
+.g-collapse-text { pointer-events: none; }
+
+@keyframes ballpop {
+  0%   { transform: scale(1); }
+  40%  { transform: scale(1.4); }
+  70%  { transform: scale(0.9); }
+  100% { transform: scale(1); }
+}
+.graph-floatball.pop { animation: ballpop .45s ease; }
+
+.graph-particle-canvas {
+  position: fixed; left: 0; top: 0; width: 100vw; height: 100vh;
+  z-index: 1250; pointer-events: none;
+}
+
+.graph-zoom-row {
+  display: flex; align-items: center; gap: 6px;
+  padding: 8px 14px; border-bottom: 1px solid rgba(127,127,127,0.2);
+  font-size: 11px; color: var(--muted, #999);
+}
+.graph-zoom-btn {
+  min-width: 26px; height: 26px; padding: 0 8px;
+  border: 1px solid rgba(127,127,127,0.4); background: transparent; color: inherit;
+  border-radius: 6px; cursor: pointer; font-size: 14px; line-height: 1;
+}
+.graph-zoom-btn:hover { background: rgba(127,127,127,0.15); }
+.graph-zoom-label { min-width: 44px; text-align: center; font-variant-numeric: tabular-nums; }
+.graph-zoom-hint { margin-left: auto; color: var(--muted, #777); font-size: 10.5px; }
 .graph-refresh-row {
   display: flex; align-items: center; gap: 8px; padding: 8px 14px;
   border-bottom: 1px solid rgba(127,127,127,0.2); font-size: 11px; color: var(--muted, #999);
@@ -1314,10 +1393,14 @@ body.dark .composer-inner { box-shadow: 0 4px 20px rgba(0,0,0,.25); }
   color: var(--muted, #999); font-size: 13px; text-align: center; padding: 20px;
 }
 /* 图节点/边样式（由 JS 内联控制颜色，这里只定基础） */
-.g-node rect { stroke-width: 1.5; }
-.g-node text { font-size: 11px; fill: #fff; pointer-events: none; }
-.g-edge { fill: none; stroke: rgba(150,150,170,.6); stroke-width: 1.2; }
-.g-edge-label { font-size: 8.5px; fill: var(--muted, #999); pointer-events: none; }
+.g-node { cursor: default; }
+.g-node rect { stroke: rgba(255,255,255,.20); stroke-width: 1.4; filter: drop-shadow(0 2px 3px rgba(0,0,0,.30)); }
+.g-node:hover rect { filter: drop-shadow(0 4px 8px rgba(0,0,0,.45)); }
+.g-node .g-type { font-size: 9px; fill: rgba(255,255,255,.88); font-weight: 600; letter-spacing:.5px; pointer-events: none; }
+.g-node .g-name { font-size: 12px; fill: #fff; font-weight: 600; pointer-events: none; }
+.g-edge { fill: none; stroke: rgba(150,150,170,.65); stroke-width: 1.3; }
+.g-edge-label { font-size: 8px; fill: var(--muted, #ccc); pointer-events: none; }
+.g-column { fill: rgba(255,255,255,.03); stroke: rgba(255,255,255,.05); }
 .g-panel-toggle-hint { font-size: 11px; }
 
 .graph-legend {
@@ -1461,3 +1544,21 @@ body.dark .composer-inner { box-shadow: 0 4px 20px rgba(0,0,0,.25); }
   font-size: 12px;
   border-radius: 6px;
 }
+
+/* 处理过程折叠（默认折叠，状态栏右侧小三角展开） */
+.exec-box-body { background: var(--main-bg); }
+.execution-log.collapsed .exec-box-body { display: none; }
+.exec-status-bar .exec-status-text { flex: 1; }
+.exec-box-toggle {
+  border: none;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 5px;
+  white-space: nowrap;
+  transition: background 0.2s, color 0.2s;
+}
+.exec-box-toggle:hover { background: var(--sidebar-hover); color: var(--text-primary); }

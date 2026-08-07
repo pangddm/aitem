@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Kubedoctor - 智能运维助手</title>
     <link rel="icon" href="data:,">
-    <link rel="stylesheet" href="/static/style.css?v=20260806p">
+    <link rel="stylesheet" href="/static/style.css?v=20260810m">
 </head>
 <body>
     <!-- 侧边栏 -->
@@ -65,15 +65,6 @@
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
                         <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
-                    </svg>
-                </button>
-                <button class="topbar-btn" id="graphBtn" title="拓扑图">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <circle cx="5" cy="6" r="2"></circle>
-                        <circle cx="19" cy="5" r="2"></circle>
-                        <circle cx="12" cy="18" r="2"></circle>
-                        <line x1="6.8" y1="7" x2="10.5" y2="16"></line>
-                        <line x1="17" y1="6.5" x2="13.5" y2="16.4"></line>
                     </svg>
                 </button>
                 <button class="topbar-btn" id="settingsBtn" title="设置">
@@ -173,6 +164,7 @@
 
         <!-- 拓扑图面板 -->
         <div class="graph-panel" id="graphPanel">
+<div class="graph-collapse-tab" id="graphCollapseTab" title="收起为悬浮球">‹</div>
             <div class="graph-panel-header">
                 <span class="graph-panel-title">集群拓扑图</span>
                 <span class="graph-panel-sub" id="graphPanelSub"></span>
@@ -181,6 +173,13 @@
             <div class="graph-refresh-row">
                 <button class="graph-refresh-btn" id="graphRefreshBtn">刷新(重建)</button>
                 <span class="graph-refresh-hint" id="graphRefreshHint">点击立即从集群重建拓扑 · 亦可定时自动更新</span>
+            </div>
+            <div class="graph-zoom-row">
+                <button class="graph-zoom-btn" id="graphZoomOut" title="缩小">−</button>
+                <span class="graph-zoom-label" id="graphZoomLabel">100%</span>
+                <button class="graph-zoom-btn" id="graphZoomIn" title="放大">＋</button>
+                <button class="graph-zoom-btn" id="graphZoomReset" title="重置缩放">适应</button>
+                <span class="graph-zoom-hint">Ctrl/⌘+滚轮 缩放</span>
             </div>
             <div class="graph-interval-row">
                 <label for="graphIntervalInput">自动重建间隔</label>
@@ -191,6 +190,19 @@
             <div class="graph-canvas" id="graphCanvas"></div>
             <div class="graph-empty" id="graphEmpty" style="display:none">暂无拓扑数据，先连接主机或让 AI 执行一些查询</div>
             <div class="graph-legend" id="graphLegend"></div>
+        </div>
+
+        <!-- 折叠后可见的展开把手（仅面板收起时显示） -->
+        <div class="graph-reopen-tab" id="graphReopenTab" title="展开拓扑图" style="display:none">›</div>
+        <!-- 拓扑悬浮球（常驻，可拖动；点击展开/收起拓扑图） -->
+        <div class="graph-floatball" id="graphFloatBall" title="集群拓扑图">
+            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round">
+                <circle cx="5" cy="6" r="2.4"></circle>
+                <circle cx="19" cy="5" r="2.4"></circle>
+                <circle cx="12" cy="18" r="2.4"></circle>
+                <line x1="6.8" y1="7.2" x2="10.5" y2="16"></line>
+                <line x1="17.2" y1="6.6" x2="13.5" y2="16.4"></line>
+            </svg>
         </div>
     </main>
 
@@ -307,6 +319,6 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=20260806u"></script>
+    <script src="/static/app.js?v=20260810m"></script>
 </body>
 </html>

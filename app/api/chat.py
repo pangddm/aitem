@@ -366,12 +366,125 @@ async def chat_stream(
 
 
 @router.post("/chat_with_document")
+async def _stream_workflow_events(
+    user_id: str,
+    user_message: str,
+    actual_conv_id: str,
+    memories: list,
+    knowledge_context: str,
+    conversation_history: list,
+    user_log_text: str = None,
+):
+    """运行 AgentWorkflow.run_stream，转发事件并保存会话/记忆/自动学习。
+
+    以 dict 事件迭代输出，由调用方序列化为 SSE；结束时发送 done 事件。
+    """
+    from app.api.conversation import save_message as save_conv_message
+
+    THINKING_EVENT_TYPES = {
+        "reasoning", "task_plan", "risk_assessment", "validation",
+        "tool_call", "tool_result", "observation", "retry_loop",
+    }
+    all_chunks = []
+    thinking_chain = []
+    auto_learn_data = {"task_plan": None, "execution_result": None, "observation": None}
+    try:
+        workflow = AgentWorkflow()
+        async for event in workflow.run_stream(
+            user_id=user_id,
+            user_message=user_message,
+            memories=memories,
+            knowledge_context=knowledge_context,
+            conversation_history=conversation_history,
+        ):
+            ct = event.get("content", "")
+            if event.get("type") == "answer_chunk" and ct:
+                all_chunks.append(str(ct))
+
+            evt_type = event.get("type", "")
+            if evt_type in THINKING_EVENT_TYPES:
+                thinking_chain.append({
+                    "type": evt_type,
+                    "content": event.get("content"),
+                    "command": event.get("command"),
+                    "result": event.get("result"),
+                    "success": event.get("success"),
+                })
+
+            if evt_type == "task_plan":
+                auto_learn_data["task_plan"] = event.get("content", {})
+            elif evt_type == "tool_result":
+                auto_learn_data["execution_result"] = {
+                    "success": True,
+                    "command": event.get("command", ""),
+                    "result": event.get("result", ""),
+                }
+            elif evt_type == "observation":
+                auto_learn_data["observation"] = event.get("content", {})
+
+            yield event
+    except Exception as e:
+        print(f"[SSE] Stream error: {type(e).__name__}: {e}")
+        traceback.print_exc()
+        try:
+            yield {"type": "error", "content": str(e)[:200]}
+        except Exception:
+            pass
+    finally:
+        try:
+            yield {"type": "done", "content": ""}
+        except Exception:
+            pass
+
+        full_answer = "".join(all_chunks) if all_chunks else ""
+        try:
+            await save_conv_message(
+                actual_conv_id, "user", user_log_text or user_message, user_id,
+            )
+            if full_answer:
+                await save_conv_message(
+                    actual_conv_id, "assistant", full_answer, user_id,
+                    thinking_chain=thinking_chain if thinking_chain else None,
+                )
+        except Exception as save_err:
+            print(f"[SSE] Save message error: {type(save_err).__name__}: {save_err}")
+            traceback.print_exc()
+
+        async def _run_memory():
+            try:
+                msgs = [{"role": "user", "content": user_log_text or user_message}]
+                if full_answer:
+                    msgs.append({"role": "assistant", "content": full_answer})
+                service = memory_container.create_service()
+                await service.process(owner=user_id, messages=msgs, source=MemorySource.CHAT)
+            except Exception as mem_err:
+                print(f"[Memory] 对话长期记忆存储失败: {type(mem_err).__name__}: {mem_err}")
+        asyncio.create_task(_run_memory())
+
+        if auto_learn_data["task_plan"] and auto_learn_data["execution_result"] and auto_learn_data["observation"]:
+            async def _run_auto_learn():
+                try:
+                    from app.knowledge.auto_learn import AutoLearner
+                    learner = AutoLearner()
+                    await learner.learn_and_store(
+                        owner=user_id,
+                        task_plan=auto_learn_data["task_plan"],
+                        execution_result=auto_learn_data["execution_result"],
+                        observation=auto_learn_data["observation"],
+                    )
+                except Exception as learn_err:
+                    print(f"[AutoLearn] 后台学习异常: {learn_err}")
+            asyncio.create_task(_run_auto_learn())
+
+
+@router.post("/chat_with_document")
 async def chat_with_document(
     background_tasks: BackgroundTasks,
     user_id: str = Form(...),
     message: str = Form(...),
     file: UploadFile = File(...),
 ):
+    """上传附件的聊天：解析文档并注入上下文，走与普通聊天一致的流式 SSE（思考链 + 流式回复）"""
     file_path = os.path.join(UPLOAD_DIR, file.filename)
     content = await file.read()
     with open(file_path, "wb") as f:
@@ -399,30 +512,6 @@ async def chat_with_document(
         document_content = ""
         chunks = []
 
-    if chunks:
-        try:
-            memory_messages = []
-            for chunk in chunks:
-                ctype = chunk.get("type", "text")
-                ccontent = chunk.get("content", "")
-                memory_messages.append({
-                    "role": "user",
-                    "content": (
-                        f"文档来源: {file_path}\n"
-                        f"内容类型: {ctype}\n"
-                        f"内容: {ccontent}"
-                    ),
-                })
-            memory_service = memory_container.create_service()
-            await memory_service.process(
-                owner=user_id,
-                messages=memory_messages,
-                source=MemorySource.DOCUMENT,
-            )
-        except Exception as e:
-            print(f"Document memory storage error: {e}")
-            traceback.print_exc()
-
     if document_content:
         full_message = f"""用户问题：{message}
 
@@ -438,13 +527,62 @@ async def chat_with_document(
     else:
         full_message = message
 
-    # 使用新的 AgentWorkflow 替代旧的 chat_with_agent
-    workflow = AgentWorkflow()
-    result = await workflow.run(
-        user_id=user_id,
-        user_message=full_message,
+    # 创建对话记录
+    from app.db.repository.conversation_repository import conversation_repo
+    conv = await conversation_repo.create(user_id, "文档对话")
+    actual_conv_id = conv["id"]
+
+    async def event_stream():
+        try:
+            memory_service = await get_memory_service()
+            memories = await memory_service.search(owner=user_id, query=message)
+        except Exception:
+            memories = []
+            print("[Request] 长期记忆检索失败")
+
+        knowledge_context = await _retrieve_knowledge_context(user_id, message)
+
+        # 注入图拓扑/审计参考
+        graph_context = await _retrieve_graph_context(user_id, message)
+        if graph_context:
+            knowledge_context = "【集群拓扑图参考（缓存提示，须用 kubectl 复核）】\n" + graph_context + "\n\n" + knowledge_context
+
+        # 注入用户上传的文档内容（供直接回答）
+        if document_content:
+            knowledge_context = f"【用户上传文档内容（供直接回答）】\n{document_content}\n\n" + knowledge_context
+
+        # 对话历史
+        conversation_history = []
+        try:
+            all_msgs = await conversation_repo.list_messages(actual_conv_id)
+            conversation_history = all_msgs[-10:] if len(all_msgs) > 10 else all_msgs
+        except Exception:
+            pass
+
+        yield f"data: {_json.dumps({'type': 'conv_created', 'conv_id': actual_conv_id}, ensure_ascii=False)}\n\n"
+
+        async for event in _stream_workflow_events(
+            user_id=user_id,
+            user_message=full_message,
+            actual_conv_id=actual_conv_id,
+            memories=memories,
+            knowledge_context=knowledge_context,
+            conversation_history=conversation_history,
+            user_log_text=message,
+        ):
+            try:
+                yield f"data: {_json.dumps(event, ensure_ascii=False)}\n\n"
+            except GeneratorExit:
+                return
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
     )
-    return {"response": result.get("answer", "")}
 
 
 @router.post("/chat/confirm")

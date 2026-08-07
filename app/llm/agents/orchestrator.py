@@ -109,9 +109,11 @@ class Orchestrator(BaseAgent):
 
         reasoning = result.get("reasoning", "")
         task_plan = result.get("data", {})
+        parse_failed = result.get("parse_failed", False)
 
-        # 默认值兜底
-        if not task_plan:
+        # 默认值兜底（含解析失败时：降级为“知识问答”，不进入集群执行流程，
+        # 由 Reporter 结合知识库/文档内容正常回答用户问题）
+        if not task_plan or parse_failed:
             task_plan = {
                 "intent": "query",
                 "task_type": "other",

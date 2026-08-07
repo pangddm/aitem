@@ -162,19 +162,45 @@ class BaseAgent:
         raw = result.get("content", "")
         reasoning = result.get("reasoning", "")
 
-        if not raw:
-            print(f"[{self.name}] ⚠️ think_json_with_reasoning: LLM 返回空 content，reasoning 长度={len(reasoning)}")
-            return {"reasoning": reasoning, "data": {}}
+        data, ok = self._parse_json_response(raw)
+        if ok:
+            return {"reasoning": reasoning, "data": data, "parse_failed": False}
 
-        # 清理 markdown 代码块
+        # JSON 解析失败：追加纠错提示重试一次，要求只输出严格 JSON
+        print(f"[{self.name}] JSON 解析失败，追加纠错提示重试...")
+        retry_result = await self.think_with_reasoning(
+            system_prompt,
+            user_message + "\n\n⚠️ 上次输出不是有效 JSON。请重新回答，并且【只】输出严格的 JSON 对象，不要包含任何解释、注释或 Markdown 代码块。",
+        )
+        raw2 = retry_result.get("content", "") or ""
+        reasoning2 = retry_result.get("reasoning", "") or reasoning
+        data2, ok2 = self._parse_json_response(raw2)
+
+        if not ok2:
+            # 仍失败：标记 parse_failed，让调用方（如 Orchestrator）降级为
+            # “按知识库/文档内容正常回答”，而不是中途中断或输出残缺内容
+            print(f"[{self.name}] JSON 无法修复，原始内容: {(raw or raw2)[:300]}")
+            return {
+                "reasoning": reasoning2,
+                "data": {},
+                "parse_failed": True,
+                "raw": (raw or raw2)[:2000],
+            }
+
+        print(f"[{self.name}] JSON 重试解析成功")
+        return {"reasoning": reasoning2, "data": data2, "parse_failed": False}
+
+    def _parse_json_response(self, raw: str):
+        """尝试把 LLM 返回内容解析为 JSON（支持 Markdown 代码块与常见截断）。返回 (data, ok)。"""
+        if not raw or not raw.strip():
+            return ({}, False)
         cleaned = raw.strip()
         if cleaned.startswith("```"):
             lines = cleaned.split("\n")
             lines = [l for l in lines if not l.strip().startswith("```")]
             cleaned = "\n".join(lines)
-
         try:
-            data = json.loads(cleaned)
+            return (json.loads(cleaned), True)
         except json.JSONDecodeError:
             # 尝试修复常见的 JSON 截断问题
             print(f"[{self.name}] JSON 解析失败，尝试修复...")
@@ -185,16 +211,13 @@ class BaseAgent:
                 fixed = fixed.rstrip().rstrip(",")
                 fixed += "}" * open_braces + "]" * open_brackets
                 try:
-                    data = json.loads(fixed)
-                    print(f"[{self.name}] JSON 修复成功")
+                    return (json.loads(fixed), True)
                 except json.JSONDecodeError:
                     print(f"[{self.name}] JSON 修复失败，原始内容: {raw[:300]}")
-                    data = {}
+                    return ({}, False)
             else:
-                print(f"[{self.name}] JSON 无法修复，原始内容: {raw[:300]}")
-                data = {}
-
-        return {"reasoning": reasoning, "data": data}
+                print(f"[{self.name}] JSON 无未闭合括号，原始内容: {raw[:300]}")
+                return ({}, False)
 
     async def think_stream(self, system_prompt: str, user_message: str):
         """

@@ -1003,6 +1003,9 @@ class AgentWorkflow:
 
 
     async def _persist_tool_graph(self, owner: str, command: str, tool_result: str, entities: list):
+        from app.core.config import NEO4J_WRITE_ENABLED
+        if not NEO4J_WRITE_ENABLED:
+            return
         """后台把执行命令涉及的资源写入 Neo4j 图（失败仅打印，不阻塞主流程）"""
         try:
             from app.memory.repository.graph_repository import GraphRepository

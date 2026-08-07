@@ -119,6 +119,7 @@ const App = {
       execCmd: "执行命令",
       execResult: "执行结果",
       resultObs: "结果观察",
+      downloadReport: "下载报告",
     },
     en: {
       newChat: "New Chat",
@@ -201,6 +202,7 @@ const App = {
       execCmd: "Execute Command",
       execResult: "Execution Result",
       resultObs: "Result Observation",
+      downloadReport: "Download Report",
     },
   },
 
@@ -245,9 +247,11 @@ const App = {
       "settingsBtn", "settingsModal", "settingsModalClose",
       "settingsTheme", "settingsLanguage", "settingsAvatarInput",
       "settingsAvatarPreview", "settingsSaveBtn", "settingsTestMode",
-      "graphBtn", "graphPanel", "graphPanelClose", "graphRefreshBtn",
+      "graphPanel", "graphPanelClose", "graphRefreshBtn",
       "graphCanvas", "graphEmpty", "graphLegend", "graphPanelSub",
       "graphRefreshHint", "graphIntervalInput", "graphIntervalSave",
+      "graphCollapseTab", "graphFloatBall", "graphReopenTab",
+      "graphZoomIn", "graphZoomOut", "graphZoomReset", "graphZoomLabel",
     ];
     ids.forEach((id) => { this.el[id] = document.getElementById(id); });
     this.welcomeTpl = this.el.welcomeScreen ? this.el.welcomeScreen.outerHTML : "";
@@ -518,17 +522,31 @@ const App = {
     });
     this.el.settingsSaveBtn.addEventListener("click", () => this.saveSettings());
 
-    // 拓扑图
-    this.el.graphBtn.addEventListener("click", () => {
-      if (this.el.graphPanel.classList.contains("open")) {
-        this.closeGraphPanel();
-      } else {
-        this.openGraphPanel();
-      }
-    });
+    // 拓扑图（悬浮球作为常驻入口）
     this.el.graphPanelClose.addEventListener("click", () => this.closeGraphPanel());
     this.el.graphRefreshBtn.addEventListener("click", () => this.rebuildTopology());
     this.el.graphIntervalSave.addEventListener("click", () => this.saveTopologyInterval());
+    // 面板边缘折叠箭头 -> 收起为悬浮球（展开靠悬浮球）
+    if (this.el.graphCollapseTab) {
+      this.el.graphCollapseTab.addEventListener("click", () => this.closeGraphPanel());
+    }
+    if (this.el.graphReopenTab) {
+      this.el.graphReopenTab.addEventListener("click", () => this.openGraphPanel());
+    }
+    // 悬浮球：可拖动 + 点击展开/收起
+    this.initFloatBall();
+    // 缩放
+    if (this.el.graphZoomIn) this.el.graphZoomIn.addEventListener("click", () => this.stepGraphZoom(0.2));
+    if (this.el.graphZoomOut) this.el.graphZoomOut.addEventListener("click", () => this.stepGraphZoom(-0.2));
+    if (this.el.graphZoomReset) this.el.graphZoomReset.addEventListener("click", () => this.setGraphZoom(1));
+    if (this.el.graphCanvas) {
+      this.el.graphCanvas.addEventListener("wheel", (e) => {
+        if (e.ctrlKey || e.metaKey) {
+          e.preventDefault();
+          this.stepGraphZoom(e.deltaY < 0 ? 0.1 : -0.1);
+        }
+      }, { passive: false });
+    }
     this.el.settingsTheme.addEventListener("change", () => {
       // 实时预览主题
       const val = this.el.settingsTheme.value;
@@ -824,10 +842,10 @@ const App = {
         wrapper.className = "event-block thinking-chain completed";
         const wrapperTitle = document.createElement("div");
         wrapperTitle.className = "event-title";
-        wrapperTitle.innerHTML = `<span>💭 思考链</span><span class="event-status">✓</span>`;
+        wrapperTitle.innerHTML = `<span>▸ 展开处理过程</span><span class="event-status">✓</span>`;
         wrapper.appendChild(wrapperTitle);
         const wrapperContent = document.createElement("div");
-        wrapperContent.className = "event-content";
+        wrapperContent.className = "event-content collapsed";
         const innerContainer = document.createElement("div");
         innerContainer.className = "thinking-chain-inner";
         blocks.forEach((block) => {
@@ -990,6 +1008,7 @@ const App = {
       if (fullAnswer) {
         this.state.messages.push({ role: "assistant", content: fullAnswer, thinking_chain: thinkingChain });
       }
+      this.collapseExecBox(contentEl);
       this.loadConversations();
       this.scrollToBottom();
     }
@@ -1003,26 +1022,37 @@ const App = {
     box.className = "execution-log animating exec-box";
     box._flowIdx = 0;
     box.innerHTML = `
-      <div class="flow-steps">
-        <div class="flow-step" data-idx="0"><span class="flow-dot">1</span><span class="flow-label">意图识别</span></div>
-        <div class="flow-connector"></div>
-        <div class="flow-step" data-idx="1"><span class="flow-dot">2</span><span class="flow-label">风险校验</span></div>
-        <div class="flow-connector"></div>
-        <div class="flow-step" data-idx="2"><span class="flow-dot">3</span><span class="flow-label">执行命令</span></div>
-        <div class="flow-connector"></div>
-        <div class="flow-step" data-idx="3"><span class="flow-dot">4</span><span class="flow-label">观察结果</span></div>
-        <div class="flow-connector"></div>
-        <div class="flow-step" data-idx="4"><span class="flow-dot">5</span><span class="flow-label">生成报告</span></div>
+      <div class="exec-box-body">
+        <div class="flow-steps">
+          <div class="flow-step" data-idx="0"><span class="flow-dot">1</span><span class="flow-label">意图识别</span></div>
+          <div class="flow-connector"></div>
+          <div class="flow-step" data-idx="1"><span class="flow-dot">2</span><span class="flow-label">风险校验</span></div>
+          <div class="flow-connector"></div>
+          <div class="flow-step" data-idx="2"><span class="flow-dot">3</span><span class="flow-label">执行命令</span></div>
+          <div class="flow-connector"></div>
+          <div class="flow-step" data-idx="3"><span class="flow-dot">4</span><span class="flow-label">观察结果</span></div>
+          <div class="flow-connector"></div>
+          <div class="flow-step" data-idx="4"><span class="flow-dot">5</span><span class="flow-label">生成报告</span></div>
+        </div>
+        <div class="exec-steps"></div>
       </div>
-      <div class="exec-steps"></div>
       <div class="exec-status-bar">
         <span class="exec-status-icon">&#9203;</span>
         <span class="exec-status-text">正在分析用户需求</span>
+        <button class="exec-box-toggle" type="button" title="展开/折叠处理过程">▾ 收起</button>
       </div>
     `;
     const answer = contentEl.querySelector(".answer-area");
     if (answer) contentEl.insertBefore(box, answer);
     else contentEl.appendChild(box);
+    const toggleBtn = box.querySelector(".exec-box-toggle");
+    if (toggleBtn) {
+      toggleBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        box.classList.toggle("collapsed");
+        toggleBtn.textContent = box.classList.contains("collapsed") ? "▸ 展开" : "▾ 收起";
+      });
+    }
     return box;
   },
 
@@ -1099,6 +1129,9 @@ const App = {
     div.textContent = t;
     body.appendChild(div);
     body.dataset.lastLine = t;
+    // 思考链滚动刷新：滚动到当前阶段内容底部
+    const stepsBox = item.closest(".exec-steps");
+    if (stepsBox) stepsBox.scrollTop = stepsBox.scrollHeight;
     this.scrollToBottom();
   },
 
@@ -1143,11 +1176,22 @@ const App = {
     if (icon) icon.textContent = "✓";
     const t = box.querySelector(".exec-status-text");
     if (t) t.textContent = "报告生成完成";
+    const hs = box.querySelector(".exec-box-status");
+    if (hs) hs.textContent = "✓ 已完成";
     box.classList.remove("animating");
     box.classList.add("completed");
+    this.collapseExecBox(contentEl);
   },
 
 
+
+  collapseExecBox(contentEl) {
+    const box = contentEl.querySelector(".execution-log.exec-box");
+    if (!box) return;
+    box.classList.add("collapsed");
+    const toggleBtn = box.querySelector(".exec-box-toggle");
+    if (toggleBtn) toggleBtn.textContent = "▸ 展开";
+  },
 
   attachDownloadButton(contentEl) {
     if (!this.state.convId) return;
@@ -1218,6 +1262,8 @@ const App = {
 
     // 最终答案流式输出
     if (type === "answer_chunk") {
+      // 思考完成，开始回复 -> 折叠思考过程
+      this.collapseExecBox(contentEl);
       let answerArea = contentEl.querySelector(".answer-area");
       if (!answerArea) {
         answerArea = document.createElement("div");
@@ -1883,10 +1929,52 @@ const App = {
     }
   },
 
+
   openGraphPanel() {
-    this.el.graphPanel.classList.add("open");
+    const panel = this.el.graphPanel;
+    if (!panel || panel.classList.contains("open")) return;
+
+    // 面板固定停靠在最右侧，从右侧滑出
+    panel.classList.add("from-right");
+    panel.classList.remove("from-left");
+    panel.style.left = "auto";
+    panel.style.right = "0px";
+    panel.style.transform = "translateX(105%)";
+    if (this.el.graphReopenTab) this.el.graphReopenTab.style.display = "none";
+    void panel.offsetWidth; // 触发过渡
+    panel.style.transform = "translateX(0)";
+    panel.classList.add("open");
+    if (this.el.graphCollapseTab) this.el.graphCollapseTab.textContent = "\u203a";
     this.loadTopology();
     this.loadTopologyInterval();
+  },
+
+  closeGraphPanel() {
+    const panel = this.el.graphPanel;
+    if (!panel || !panel.classList.contains("open")) return;
+    // 收起：向右侧滑出
+    panel.style.transform = "translateX(105%)";
+    panel.classList.remove("open");
+    // 折叠后显示可再展开的把手(右侧)
+    const rt = this.el.graphReopenTab;
+    if (rt) {
+      // 右侧停靠：贴着屏幕右缘(平边朝边缘)，圆角朝内，箭头指向展开方向(向左)
+      rt.classList.remove("right");
+      rt.style.right = "0px";
+      rt.style.left = "auto";
+      rt.textContent = "\u2039";
+      rt.style.display = "flex";
+    }
+    this.popFloatBall();
+  },
+
+    popFloatBall() {
+    const ball = this.el.graphFloatBall;
+    if (!ball) return;
+    ball.classList.remove("pop");
+    void ball.offsetWidth; // 重新触发动画
+    ball.classList.add("pop");
+    setTimeout(() => ball.classList.remove("pop"), 500);
   },
 
   async loadTopologyInterval() {
@@ -1917,8 +2005,71 @@ const App = {
     }
   },
 
-  closeGraphPanel() {
-    this.el.graphPanel.classList.remove("open");
+  initFloatBall() {
+    const ball = this.el.graphFloatBall;
+    if (!ball) return;
+    ball.addEventListener("click", () => {
+      if (this._ballDragged) { this._ballDragged = false; return; }
+      if (this.el.graphPanel.classList.contains("open")) {
+        this.closeGraphPanel();
+      } else {
+        this.openGraphPanel();
+      }
+    });
+    // 拖动（Pointer Events）
+    let dragging = false, moved = false, sx = 0, sy = 0, ox = 0, oy = 0;
+    ball.addEventListener("pointerdown", (e) => {
+      dragging = true; moved = false;
+      sx = e.clientX; sy = e.clientY;
+      const r = ball.getBoundingClientRect();
+      ox = r.left; oy = r.top;
+      ball.setPointerCapture && ball.setPointerCapture(e.pointerId);
+    });
+    ball.addEventListener("pointermove", (e) => {
+      if (!dragging) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy;
+      if (Math.abs(dx) + Math.abs(dy) > 3) moved = true;
+      const maxX = window.innerWidth - (ball.offsetWidth || 56) - 8;
+      const maxY = window.innerHeight - (ball.offsetHeight || 56) - 8;
+      ball.style.left = Math.max(8, Math.min(maxX, ox + dx)) + "px";
+      ball.style.top = Math.max(8, Math.min(maxY, oy + dy)) + "px";
+      ball.style.right = "auto";
+    });
+    const endDrag = () => {
+      if (dragging && moved) this._ballDragged = true;
+      dragging = false;
+    };
+    ball.addEventListener("pointerup", endDrag);
+    ball.addEventListener("pointercancel", () => { dragging = false; });
+  },
+
+  toggleGraphCollapse(id) {
+    const set = this._graphCollapsed = this._graphCollapsed || new Set();
+    if (set.has(id)) set.delete(id); else set.add(id);
+    if (this._graphData) this.renderGraph(this._graphData);
+  },
+
+  setGraphZoom(z) {
+    this._graphZoom = Math.max(0.3, Math.min(3, z));
+    this.applyGraphZoom();
+  },
+
+  stepGraphZoom(delta) {
+    const cur = this._graphZoom != null ? this._graphZoom : 1;
+    this.setGraphZoom(Math.round((cur + delta) * 100) / 100);
+  },
+
+  applyGraphZoom() {
+    const z = this._graphZoom != null ? this._graphZoom : 1;
+    if (this.el.graphZoomLabel) this.el.graphZoomLabel.textContent = Math.round(z * 100) + "%";
+    const svg = this._graphSvg;
+    const g = this._graphG;
+    if (!svg || !g) return;
+    const bw = this._graphBaseW || 1, bh = this._graphBaseH || 1;
+    svg.setAttribute("width", Math.round(bw * z));
+    svg.setAttribute("height", Math.round(bh * z));
+    g.setAttribute("transform", `scale(${z})`);
+    g.setAttribute("transform-origin", "0 0");
   },
 
   async loadTopology() {
@@ -1944,9 +2095,14 @@ const App = {
     if (!el) return;
     const groups = [
       ["命名空间", "#3b82f6"],
-      ["工作负载", "#22c55e"],
-      ["Service", "#f59e0b"],
+      ["节点 Node", "#6366f1"],
+      ["工作负载 Deploy/STS/DS/Job/CronJob", "#22c55e"],
       ["Pod", "#06b6d4"],
+      ["ReplicaSet", "#14b8a6"],
+      ["Service/Endpoints/Ingress", "#f59e0b"],
+      ["配置 ConfigMap/Secret", "#64748b"],
+      ["存储 PVC/PV/StorageClass", "#b45309"],
+      ["权限 RBAC", "#ec4899"],
     ];
     el.innerHTML = groups.map((g) =>
       `<span class="legend-item"><i style="background:${g[1]}"></i>${g[0]}</span>`
@@ -1956,8 +2112,8 @@ const App = {
   renderGraph(data) {
     const canvas = this.el.graphCanvas;
     const empty = this.el.graphEmpty;
-    const nodes = (data && data.nodes) ? data.nodes : [];
-    const links = (data && data.links) ? data.links : [];
+    let nodes = (data && data.nodes) ? data.nodes : [];
+    let links = (data && data.links) ? data.links : [];
     if (this.el.graphPanelSub) {
       this.el.graphPanelSub.textContent = `${nodes.length} 节点 · ${links.length} 关系`;
     }
@@ -1970,12 +2126,37 @@ const App = {
     empty.style.display = "none";
     this.renderGraphLegend();
 
+    // ── 折叠逻辑：隐藏被折叠资源（含命名空间）的下级 ──
+    this._graphCollapsed = this._graphCollapsed || new Set();
+    const childMap = {};
+    links.forEach((l) => {
+      if (l.rel === "BELONGS_TO" || l.rel === "BACKS") {
+        (childMap[l.target] = childMap[l.target] || []).push(l.source);
+      }
+    });
+    const hasKids = (id) => (childMap[id] || []).length > 0;
+    const hiddenIds = new Set();
+    const hst = [];
+    this._graphCollapsed.forEach((id) => hst.push(id));
+    while (hst.length) {
+      const hid = hst.pop();
+      (childMap[hid] || []).forEach((c) => {
+        if (!hiddenIds.has(c)) { hiddenIds.add(c); hst.push(c); }
+      });
+    }
+    if (hiddenIds.size) {
+      links = links.filter((l) => !hiddenIds.has(l.source) && !hiddenIds.has(l.target));
+      nodes = nodes.filter((n) => !hiddenIds.has(n.id));
+    }
+
     const COLOR = {
-      Namespace:"#3b82f6", Deployment:"#22c55e", StatefulSet:"#22c55e", DaemonSet:"#22c55e", Job:"#22c55e", CronJob:"#22c55e",
+      Namespace:"#3b82f6",
+      Node:"#6366f1",
+      Deployment:"#22c55e", StatefulSet:"#22c55e", DaemonSet:"#22c55e", Job:"#22c55e", CronJob:"#22c55e",
       ReplicaSet:"#14b8a6", Pod:"#06b6d4", Service:"#f59e0b", Endpoints:"#f59e0b", Ingress:"#f59e0b",
       ConfigMap:"#94a3b8", Secret:"#64748b", Role:"#f43f5e", ClusterRole:"#f43f5e",
       RoleBinding:"#ec4899", ClusterRoleBinding:"#ec4899", ServiceAccount:"#a855f7", Group:"#d946ef", ClusterUser:"#e879f9",
-      PersistentVolumeClaim:"#a16207", PersistentVolume:"#92400e", StorageClass:"#b45309",
+      PersistentVolumeClaim:"#b45309", PersistentVolume:"#92500e", StorageClass:"#a16207",
     };
     const REL_COLOR = {
       BELONGS_TO:"#8b93a7", GRANTS:"#f43f5e", ASSIGNED_TO:"#ec4899", SELECTS:"#f59e0b",
@@ -2003,7 +2184,7 @@ const App = {
     nodes.forEach(n => { const d = depth[n.id] || 0; (cols[d] = cols[d] || []).push(n); });
     const depths = Object.keys(cols).map(Number).sort((a, b) => a - b);
 
-    const COLW = 190, ROWH = 70, NODEW = 156, NODEH = 34, PAD = 20;
+    const COLW = 220, ROWH = 102, NODEW = 186, NODEH = 58, PAD = 24;
     const W = depths.length * COLW;
     let maxRows = 1;
     depths.forEach(d => { maxRows = Math.max(maxRows, cols[d].length); });
@@ -2038,11 +2219,39 @@ const App = {
       }
     });
 
+    // 上级资源映射（BELONGS_TO/BACKS: source 属于 target）
+    const byId = {};
+    nodes.forEach((nd) => { byId[nd.id] = nd; });
+    const parents = {};
+    links.forEach((l) => {
+      if (l.rel === "BELONGS_TO" || l.rel === "BACKS") {
+        if (byId[l.source] && byId[l.target]) {
+          (parents[l.source] = parents[l.source] || []).push(byId[l.target]);
+        }
+      }
+    });
+    Object.keys(parents).forEach((k) => parents[k].sort((a, b) => a.type.localeCompare(b.type)));
+
     const svgNS = "http://www.w3.org/2000/svg";
     const svg = document.createElementNS(svgNS, "svg");
-    svg.setAttribute("width", W + PAD * 2);
-    svg.setAttribute("height", H + PAD * 2);
-    svg.setAttribute("viewBox", `0 0 ${W + PAD * 2} ${H + PAD * 2}`);
+    this._graphBaseW = W + PAD * 2;
+    this._graphBaseH = H + PAD * 2;
+    const zoomG = document.createElementNS(svgNS, "g");
+    svg.appendChild(zoomG);
+    this._graphSvg = svg;
+    this._graphG = zoomG;
+
+    // 按层级绘制分栏背景，增强层次感
+    depths.forEach((d, ci) => {
+      const col = document.createElementNS(svgNS, "rect");
+      col.setAttribute("x", PAD + ci * COLW - 10);
+      col.setAttribute("y", PAD - 10);
+      col.setAttribute("width", COLW + 20);
+      col.setAttribute("height", Math.max(H - PAD, 120) + 20);
+      col.setAttribute("rx", 12);
+      col.setAttribute("class", "g-column");
+      zoomG.appendChild(col);
+    });
 
     for (const l of links) {
       const a = pos[l.source], b = pos[l.target];
@@ -2053,15 +2262,18 @@ const App = {
       line.setAttribute("class", "g-edge");
       line.setAttribute("stroke", relColor(l.rel));
       if (l.rel === "BELONGS_TO") line.setAttribute("stroke-dasharray", "4 3");
-      svg.appendChild(line);
-      const lbl = document.createElementNS(svgNS, "text");
-      lbl.setAttribute("x", (a.cx + b.cx) / 2);
-      lbl.setAttribute("y", (a.cy + b.cy) / 2 - 3);
-      lbl.setAttribute("text-anchor", "middle");
-      lbl.setAttribute("class", "g-edge-label");
-      lbl.setAttribute("fill", relColor(l.rel));
-      lbl.textContent = l.rel;
-      svg.appendChild(lbl);
+      zoomG.appendChild(line);
+      if (l.rel !== "BELONGS_TO" && l.rel !== "BACKS") {
+        const lbl = document.createElementNS(svgNS, "text");
+        lbl.setAttribute("x", (a.cx + b.cx) / 2);
+        lbl.setAttribute("y", (a.cy + b.cy) / 2 - 4);
+        lbl.setAttribute("text-anchor", "middle");
+        lbl.setAttribute("class", "g-edge-label");
+        lbl.setAttribute("fill", relColor(l.rel));
+        lbl.setAttribute("style", "paint-order:stroke;stroke:#14141d;stroke-width:2px;stroke-linejoin:round");
+        lbl.textContent = l.rel;
+        zoomG.appendChild(lbl);
+      }
     }
 
     for (const n of nodes) {
@@ -2072,18 +2284,52 @@ const App = {
       g.setAttribute("transform", `translate(${p.x},${p.y})`);
       const rect = document.createElementNS(svgNS, "rect");
       rect.setAttribute("width", NODEW); rect.setAttribute("height", NODEH);
-      rect.setAttribute("rx", 6); rect.setAttribute("fill", color(n.type));
+      rect.setAttribute("rx", 9); rect.setAttribute("fill", color(n.type));
       const title = document.createElementNS(svgNS, "title");
-      title.textContent = `${n.type} / ${n.name}`;
+      const parList = (parents[n.id] || []).map((pp) => `${pp.type} / ${pp.name}`).join(", ");
+      title.textContent = `${n.type} / ${n.name}` + (parList ? `\n上级资源: ${parList}` : "");
       rect.appendChild(title);
-      const text = document.createElementNS(svgNS, "text");
-      text.setAttribute("x", NODEW / 2); text.setAttribute("y", NODEH / 2 + 4);
-      text.setAttribute("text-anchor", "middle");
-      text.textContent = n.name.length > 22 ? n.name.slice(0, 20) + "…" : n.name;
-      g.appendChild(rect); g.appendChild(text);
-      svg.appendChild(g);
+      // 类型徽标（资源种类写清楚）
+      const tlabel = document.createElementNS(svgNS, "text");
+      tlabel.setAttribute("x", NODEW / 2); tlabel.setAttribute("y", 19);
+      tlabel.setAttribute("text-anchor", "middle");
+      tlabel.setAttribute("class", "g-type");
+      tlabel.textContent = n.type;
+      // 资源名称
+      const nameText = document.createElementNS(svgNS, "text");
+      nameText.setAttribute("x", NODEW / 2); nameText.setAttribute("y", 42);
+      nameText.setAttribute("text-anchor", "middle");
+      nameText.setAttribute("class", "g-name");
+      nameText.textContent = n.name.length > 24 ? n.name.slice(0, 22) + "…" : n.name;
+      g.appendChild(rect); g.appendChild(tlabel); g.appendChild(nameText);
+
+      // 折叠按钮：当该资源（如命名空间）有下级时显示 +/-
+      if (hasKids(n.id)) {
+        const isCollapsed = this._graphCollapsed.has(n.id);
+        const tgl = document.createElementNS(svgNS, "g");
+        tgl.setAttribute("class", "g-collapse");
+        const tc = document.createElementNS(svgNS, "circle");
+        tc.setAttribute("cx", NODEW - 12); tc.setAttribute("cy", 15);
+        tc.setAttribute("r", 8);
+        tc.setAttribute("fill", "rgba(59,130,246,.88)");
+        tc.setAttribute("stroke", "rgba(255,255,255,.9)"); tc.setAttribute("stroke-width", 1.4);
+        const tt = document.createElementNS(svgNS, "text");
+        tt.setAttribute("x", NODEW - 12); tt.setAttribute("y", 19);
+        tt.setAttribute("text-anchor", "middle"); tt.setAttribute("font-size", 12);
+        tt.setAttribute("fill", "#fff"); tt.setAttribute("class", "g-collapse-text");
+        tt.textContent = isCollapsed ? "+" : "\u2212";
+        const tTip = document.createElementNS(svgNS, "title");
+        tTip.textContent = isCollapsed ? "展开下级资源" : "折叠下级资源";
+        tgl.appendChild(tc); tgl.appendChild(tt); tgl.appendChild(tTip);
+        tgl.addEventListener("click", (ev) => { ev.stopPropagation(); this.toggleGraphCollapse(n.id); });
+        g.appendChild(tgl);
+      }
+
+      zoomG.appendChild(g);
     }
 
+    this._graphZoom = (this._graphZoom != null) ? this._graphZoom : 1;
+    this.applyGraphZoom();
     canvas.innerHTML = "";
     canvas.appendChild(svg);
   },
@@ -2123,28 +2369,70 @@ const App = {
     this.autoResize(this.el.messageInput);
     this.scrollToBottom();
 
-    const assistantEl = this.createMessageEl("assistant", this.t("analyzing"));
+    // 创建助手消息占位（含执行/思考链模块 + 流式答案区）
+    const assistantEl = this.createMessageEl("assistant", "");
+    const contentEl = assistantEl.querySelector(".message-content");
+    const answerArea = contentEl.querySelector(".answer-area");
+    this.ensureExecBox(contentEl);
+    if (answerArea) answerArea.classList.add("typing-cursor");
     this.el.chatMessages.appendChild(assistantEl);
     this.scrollToBottom();
+
+    this.state.streaming = true;
+    this.toggleStreamingUI(true);
+    this.state.abortCtrl = new AbortController();
 
     const formData = new FormData();
     formData.append("user_id", this.state.userId);
     formData.append("message", text);
     formData.append("file", file);
 
+    let fullAnswer = "";
     try {
       const res = await fetch("/chat_with_document", {
         method: "POST",
         body: formData,
+        signal: this.state.abortCtrl.signal,
       });
-      const data = await res.json();
-      const contentEl = assistantEl.querySelector(".message-content");
-      contentEl.innerHTML = this.renderMarkdown(data.response || this.t("noResponse"));
-      this.state.messages.push({ role: "assistant", content: data.response || "" });
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const payload = line.slice(6).trim();
+          if (!payload) continue;
+          try {
+            const evt = JSON.parse(payload);
+            this.handleStreamEvent(evt, contentEl, assistantEl);
+            if (evt.type === "answer_chunk") fullAnswer += evt.content || "";
+            if (evt.type === "conv_created") this.state.convId = evt.conv_id;
+          } catch (e) {
+            // 忽略单条解析错误
+          }
+        }
+      }
     } catch (e) {
-      assistantEl.querySelector(".message-content").textContent = "⚠️ " + this.t("error") + ": " + e.message;
+      if (e.name !== "AbortError") {
+        const aa = contentEl.querySelector(".answer-area");
+        if (aa) aa.innerHTML += `<br><em>⚠️ ${this.escapeHtml(this.t("error"))}: ${this.escapeHtml(e.message)}</em>`;
+        else contentEl.textContent = "⚠️ " + this.t("error") + ": " + e.message;
+      }
+    } finally {
+      if (answerArea) answerArea.classList.remove("typing-cursor");
+      contentEl.classList.remove("typing-cursor");
+      this.state.streaming = false;
+      this.toggleStreamingUI(false);
+      if (fullAnswer) this.state.messages.push({ role: "assistant", content: fullAnswer });
+      this.collapseExecBox(contentEl);
+      this.loadConversations();
+      this.scrollToBottom();
     }
-    this.scrollToBottom();
   },
 
   /* ───── 知识库 Modal ───── */
