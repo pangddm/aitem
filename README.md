@@ -46,6 +46,27 @@ flowchart LR
     NE -->|图谱| API
 ```
 
+
+## 界面展示
+
+> 把界面截图或运行录屏放到根目录 `assets/` 文件夹，替换下面占位即可直接展示。
+
+### 📷 界面截图
+
+| 截图 | 说明 |
+| --- | --- |
+| ![聊天主界面](assets/chat.png) | 对话主界面 |
+| ![集群拓扑](assets/topology.png) | 集群拓扑可视化 |
+
+### 🎬 运行演示视频
+
+将运行录屏保存为 `assets/demo.mp4`（在下方链接处替换路径）：
+
+[▶ 查看运行演示视频](assets/demo.mp4)
+
+（可选：内嵌播放控件）
+
+<video src="assets/demo.mp4" controls width="800"></video>
 ## 技术栈
 
 | 层面 | 技术 |
@@ -163,3 +184,4 @@ uvicorn main:app --workers 4 --host 0.0.0.0 --port 8000
 
 - 本项目面向 Kubernetes 集群运维场景；实际执行命令前请确认 `TEST_MODE` 与集群权限。
 - 远程命令、SSH 主机凭据等敏感信息请妥善保管。
+
