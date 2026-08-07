@@ -22,3 +22,8 @@ server.err
 # 运行时日志
 *.log
 
+
+# IDE / 缓存 / 工具配置
+.pytest_cache/
+logs/
+
