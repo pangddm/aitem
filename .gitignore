@@ -14,3 +14,11 @@ pytest.ini
 docs
 tests
 scripts
+# 运行时日志
+server.log
+server.err
+
+
+# 运行时日志
+*.log
+
