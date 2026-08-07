@@ -14,7 +14,7 @@ const EXEC_STAGE_LABEL = {
   resolved:"问题解决", query_complete:"查询完成", planning_next:"下一步分析",
 };
 
-const FLOW_LABELS = ["意图识别", "风险校验", "执行命令", "观察结果", "生成报告"];
+const FLOW_LABELS = ["意图分析", "风险校验", "执行命令", "结果观察", "生成报告"];
 
 const App = {
   webSearch: false,
@@ -792,10 +792,43 @@ const App = {
       tool_result: { cls: "tool", title: `📋 ${this.t("execResult") || "执行结果"}` },
       observation: { cls: "observation", title: `👁️ ${this.t("resultObs") || "结果观察"}` },
       retry_loop: { cls: "retry", title: `🔄 ${this.t("retry") || "重试"}` },
+      command_rewritten: { cls: "plan", title: `✏️ ${this.t("rewritten") || "问题重写"}` },
+      answer_reasoning: { cls: "thought", title: `📝 ${this.t("answerThinking") || "回答思考"}` },
     };
 
     const mapping = typeMap[type] || { cls: "thought", title: `💭 ${type}` };
     return { cls: mapping.cls, title: mapping.title, content };
+  },
+
+  // 将思考链条目归类到 5 个处理阶段（意图分析/风险校验/执行命令/结果观察/生成报告）
+  flowIdxForThinkingType(tc) {
+    if (!tc) return null;
+    const type = tc.type || "";
+    const agent = tc.agent || "";
+    if (type === "reasoning") {
+      if (agent === "risk_assessor" || agent === "validator" || agent === "validator_retry") return 1;
+      if (agent === "observer") return 3;
+      if (agent === "reporter") return 4;
+      return 0; // command_rewriter / orchestrator
+    }
+    switch (type) {
+      case "task_plan":
+      case "command_rewritten":
+        return 0;
+      case "risk_assessment":
+      case "validation":
+        return 1;
+      case "tool_call":
+      case "tool_result":
+        return 2;
+      case "observation":
+      case "retry_loop":
+        return 3;
+      case "answer_reasoning":
+        return 4;
+      default:
+        return 0;
+    }
   },
 
   renderMessages() {
@@ -808,60 +841,22 @@ const App = {
     this.state.messages.forEach((msg) => {
       const el = this.createMessageEl(msg.role, msg.content);
       container.appendChild(el);
-      // 如果有思考链数据，渲染思考链
+      // 如果有思考链数据，用与实时一致的“执行过程” 3 行样式重建（流程/状态/展开处理过程）
       if (msg.thinking_chain && msg.thinking_chain.length > 0) {
         const contentEl = el.querySelector(".message-content");
-        const answerArea = contentEl.querySelector(".answer-area");
-        
-        // 先收集所有思考链块
-        const blocks = [];
+        // 复用实时渲染的模块，保证刷新前后样式一致
+        this.ensureExecBox(contentEl);
         msg.thinking_chain.forEach((tc) => {
-          const item = this.mapThinkingChainItem(tc);
-          const block = document.createElement("div");
-          block.className = `event-block ${item.cls} completed`;
-          const titleEl = document.createElement("div");
-          titleEl.className = "event-title";
-          titleEl.innerHTML = `<span>${item.title}</span><span class="event-status">✓</span>`;
-          block.appendChild(titleEl);
-          const contentDiv = document.createElement("div");
-          contentDiv.className = "event-content collapsed";
-          const textDiv = document.createElement("div");
-          textDiv.className = "event-text";
-          textDiv.dataset.raw = item.content || "";
-          textDiv.innerHTML = this.formatThinkingContent(item.content || "");
-          contentDiv.appendChild(textDiv);
-          block.appendChild(contentDiv);
-          titleEl.addEventListener("click", () => {
-            contentDiv.classList.toggle("collapsed");
-          });
-          blocks.push(block);
+          if (!tc || tc.type === "task_plan") return;
+          const idx = this.flowIdxForThinkingType(tc);
+          if (idx == null || idx > 4) return;
+          const text = this.mapThinkingChainItem(tc).content || "";
+          if (text) this.appendStep(contentEl, idx, text);
         });
-        
-        // 创建大折叠容器
-        const wrapper = document.createElement("div");
-        wrapper.className = "event-block thinking-chain completed";
-        const wrapperTitle = document.createElement("div");
-        wrapperTitle.className = "event-title";
-        wrapperTitle.innerHTML = `<span>▸ 展开处理过程</span><span class="event-status">✓</span>`;
-        wrapper.appendChild(wrapperTitle);
-        const wrapperContent = document.createElement("div");
-        wrapperContent.className = "event-content collapsed";
-        const innerContainer = document.createElement("div");
-        innerContainer.className = "thinking-chain-inner";
-        blocks.forEach((block) => {
-          innerContainer.appendChild(block);
-        });
-        wrapperContent.appendChild(innerContainer);
-        wrapper.appendChild(wrapperContent);
-        wrapperTitle.addEventListener("click", () => {
-          wrapperContent.classList.toggle("collapsed");
-        });
-        
-        // 将大折叠容器插入到 answer-area 之前
-        if (answerArea) {
-          contentEl.insertBefore(wrapper, answerArea);
-        } else {
-          contentEl.prepend(wrapper);
+        // 全部阶段标记完成，状态栏显示“报告生成成功”，并默认折叠细节
+        this.markExecComplete(contentEl);
+        if (msg.role === "assistant" && msg.content) {
+          this.attachDownloadButton(contentEl);
         }
       }
     });
@@ -1024,22 +1019,24 @@ const App = {
     box.innerHTML = `
       <div class="exec-box-body">
         <div class="flow-steps">
-          <div class="flow-step" data-idx="0"><span class="flow-dot">1</span><span class="flow-label">意图识别</span></div>
-          <div class="flow-connector"></div>
+          <div class="flow-step" data-idx="0"><span class="flow-dot">1</span><span class="flow-label">意图分析</span></div>
+          <span class="flow-connector"></span>
           <div class="flow-step" data-idx="1"><span class="flow-dot">2</span><span class="flow-label">风险校验</span></div>
-          <div class="flow-connector"></div>
+          <span class="flow-connector"></span>
           <div class="flow-step" data-idx="2"><span class="flow-dot">3</span><span class="flow-label">执行命令</span></div>
-          <div class="flow-connector"></div>
-          <div class="flow-step" data-idx="3"><span class="flow-dot">4</span><span class="flow-label">观察结果</span></div>
-          <div class="flow-connector"></div>
+          <span class="flow-connector"></span>
+          <div class="flow-step" data-idx="3"><span class="flow-dot">4</span><span class="flow-label">结果观察</span></div>
+          <span class="flow-connector"></span>
           <div class="flow-step" data-idx="4"><span class="flow-dot">5</span><span class="flow-label">生成报告</span></div>
         </div>
-        <div class="exec-steps"></div>
-      </div>
-      <div class="exec-status-bar">
-        <span class="exec-status-icon">&#9203;</span>
-        <span class="exec-status-text">正在分析用户需求</span>
-        <button class="exec-box-toggle" type="button" title="展开/折叠处理过程">▾ 收起</button>
+        <div class="exec-status-bar">
+          <span class="exec-status-icon">&#9203;</span>
+          <span class="exec-status-text">正在分析用户需求</span>
+        </div>
+        <div class="exec-detail">
+          <button class="exec-box-toggle" type="button" title="展开/折叠处理过程">▸ 展开处理过程</button>
+          <div class="exec-steps"></div>
+        </div>
       </div>
     `;
     const answer = contentEl.querySelector(".answer-area");
@@ -1049,8 +1046,8 @@ const App = {
     if (toggleBtn) {
       toggleBtn.addEventListener("click", (e) => {
         e.stopPropagation();
-        box.classList.toggle("collapsed");
-        toggleBtn.textContent = box.classList.contains("collapsed") ? "▸ 展开" : "▾ 收起";
+        box.classList.toggle("detail-collapsed");
+        toggleBtn.textContent = box.classList.contains("detail-collapsed") ? "▸ 展开处理过程" : "▾ 收起处理过程";
       });
     }
     return box;
@@ -1175,7 +1172,7 @@ const App = {
     const icon = box.querySelector(".exec-status-icon");
     if (icon) icon.textContent = "✓";
     const t = box.querySelector(".exec-status-text");
-    if (t) t.textContent = "报告生成完成";
+    if (t) t.textContent = "报告生成成功";
     const hs = box.querySelector(".exec-box-status");
     if (hs) hs.textContent = "✓ 已完成";
     box.classList.remove("animating");
@@ -1188,9 +1185,9 @@ const App = {
   collapseExecBox(contentEl) {
     const box = contentEl.querySelector(".execution-log.exec-box");
     if (!box) return;
-    box.classList.add("collapsed");
+    box.classList.add("detail-collapsed");
     const toggleBtn = box.querySelector(".exec-box-toggle");
-    if (toggleBtn) toggleBtn.textContent = "▸ 展开";
+    if (toggleBtn) toggleBtn.textContent = "▸ 展开处理过程";
   },
 
   attachDownloadButton(contentEl) {
@@ -1289,11 +1286,9 @@ const App = {
       return;
     }
 
-    // 任务计划 → 意图识别
+    // 任务计划：不单独展示冗长 JSON，意图分析阶段已展示重写/分析内容
     if (type === "task_plan") {
       this.setFlowStage(contentEl, 0);
-      const text = typeof content === "string" ? content : JSON.stringify(content, null, 2);
-      this.appendStep(contentEl, 0, text);
       return;
     }
 

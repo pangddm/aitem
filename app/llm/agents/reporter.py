@@ -43,9 +43,17 @@ class Reporter(BaseAgent):
     def __init__(self):
         super().__init__(name="reporter")
 
-    def _build_context(self, memories: list = None, knowledge_context: str = "") -> str:
+    def _build_context(self, memories: list = None, knowledge_context: str = "", web_context: str = "") -> str:
         """构建记忆和知识库上下文"""
         context_parts = []
+
+        if web_context:
+            from datetime import datetime as _dt
+            _today = _dt.now().strftime("%Y-%m-%d")
+            context_parts.append(
+                f"今天是 {_today}。下面是今天实时联网检索到的信息（可信）：\n{web_context}\n"
+                "规则：对“现在/最新/最火”这类时效性问题，必须以上述实时检索信息和今天日期为准给出当前答案，不要使用过时的内置知识作答；涉及客观事实、最新版本、指令用法时优先采用并注明来源。"
+            )
 
         if knowledge_context:
             context_parts.append(
@@ -74,7 +82,8 @@ class Reporter(BaseAgent):
                      validation: dict, execution_result: dict,
                      observation: dict,
                      memories: list = None,
-                     knowledge_context: str = "") -> dict:
+                     knowledge_context: str = "",
+                     web_context: str = "") -> dict:
         """
         汇总全流程结果，生成报告
 
@@ -84,7 +93,7 @@ class Reporter(BaseAgent):
                 "answer": str,      # 最终回答
             }
         """
-        extra_context = self._build_context(memories, knowledge_context)
+        extra_context = self._build_context(memories, knowledge_context, web_context)
 
         # 如果不需要执行（理论知识等），直接让 LLM 回答
         if not task_plan.get("requires_execution"):
@@ -169,6 +178,7 @@ validator_explanation: {validator_note}
                            observation: dict,
                            memories: list = None,
                            knowledge_context: str = "",
+                           web_context: str = "",
                            all_execution_results: list = None,
                            all_observations: list = None):
         """
@@ -178,7 +188,7 @@ validator_explanation: {validator_note}
             {"type": "reasoning", "content": "..."}   # 思考链
             {"type": "content", "content": "..."}      # 正文
         """
-        extra_context = self._build_context(memories, knowledge_context)
+        extra_context = self._build_context(memories, knowledge_context, web_context)
 
         # 如果不需要执行（理论知识等），直接流式回答
         if not task_plan.get("requires_execution"):

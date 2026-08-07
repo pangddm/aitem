@@ -102,7 +102,22 @@ class Validator(BaseAgent):
             "kubectl 等集群命令不受影响。不要生成与用户明确偏好相悖的容器工具命令。"
         )
 
-    async def generate_command(self, task_plan: dict, memories: list = None) -> dict:
+    def _build_knowledge_hint(self, knowledge_context: str, web_context: str = "") -> str:
+        """把知识库/文档上下文和实时联网信息整理成参考段落，供命令生成参照"""
+        parts = []
+        if web_context:
+            parts.append(
+                "\n\n## 实时联网检索信息（可信的当前事实，涉及最新版本/指令用法时优先采用）\n"
+                + web_context[:2000]
+            )
+        if knowledge_context:
+            parts.append(
+                "\n\n## 知识库/文档上下文（供参考，生成命令或判断是否需要执行时请结合这份内容）\n"
+                + knowledge_context[:3000]
+            )
+        return "".join(parts)
+
+    async def generate_command(self, task_plan: dict, memories: list = None, knowledge_context: str = "", web_context: str = "") -> dict:
         """
         仅生成命令（用于并行执行），不包含安全校验
 
@@ -113,10 +128,11 @@ class Validator(BaseAgent):
                 "explanation": str,   # 命令说明
             }
         """
+        user_msg = f"意图: {task_plan}" + self._build_knowledge_hint(knowledge_context, web_context)
         system_prompt = VALIDATOR_PROMPT + self._build_preference_hint(memories)
         result = await self.think_json_with_reasoning(
             system_prompt=system_prompt,
-            user_message=f"意图: {task_plan}",
+            user_message=user_msg,
         )
 
         reasoning = result.get("reasoning", "")
@@ -135,6 +151,8 @@ class Validator(BaseAgent):
         execution_output: str,
         observation_feedback: str,
         memories: list = None,
+        knowledge_context: str = "",
+        web_context: str = "",
     ) -> dict:
         """
         根据 Observer 反馈重新生成命令（反馈循环用）
@@ -153,7 +171,7 @@ class Validator(BaseAgent):
 Observer 反馈: {observation_feedback}
 
 请根据以上信息重新生成更合适的命令。
-"""
+""" + self._build_knowledge_hint(knowledge_context, web_context)
 
         system_prompt = VALIDATOR_FEEDBACK_PROMPT + self._build_preference_hint(memories)
         result = await self.think_json_with_reasoning(

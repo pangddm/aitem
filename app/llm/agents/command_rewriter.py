@@ -65,13 +65,16 @@ class CommandRewriter(BaseAgent):
     def __init__(self):
         super().__init__(name="command_rewriter")
 
-    async def rewrite(self, user_message: str, conversation_history: list = None) -> dict:
+    async def rewrite(self, user_message: str, conversation_history: list = None,
+                      memories: list = None, knowledge_context: str = "", web_context: str = "") -> dict:
         """
         重写用户模糊/混乱的问题描述
 
         参数:
             user_message: 用户当前消息
             conversation_history: 对话历史 [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}, ...]
+            memories: 检索到的长期记忆 [("内容", 相关度), ...]
+            knowledge_context: 知识库/文档上下文文本
 
         返回:
             {
@@ -114,9 +117,36 @@ class CommandRewriter(BaseAgent):
                 f"请直接重写为'用户询问之前对话中提出的问题'，不要添加任何假设性内容。"
             )
         
+        # 注入检索到的长期记忆与知识上下文，帮助理解用户所指（如某些缩写/模板名）
+        context_prefix = ""
+        if memories:
+            mem_lines = []
+            for m in memories[:8]:
+                desc = getattr(m, "content", None)
+                if desc is None:
+                    if isinstance(m, (tuple, list)) and m:
+                        desc = m[0]
+                    else:
+                        desc = m
+                if desc:
+                    mem_lines.append("- " + str(desc))
+            if mem_lines:
+                context_prefix += (
+                    "## 检索到的用户长期记忆（用于正确理解用户所指，非常重要）：\n"
+                    + "\n".join(mem_lines)
+                    + "\n\n若用户在问题中提到记忆中的某个概念/模板/缩写（如 RBG / RoleBasedGroup 等），"
+                      "请据此理解其含义并据此重写，不要凭空当作集群资源去查询。"
+                      "若问题属于知识/模板咨询，original_intent 设为 chat 或 query，且不要生成去集群执行的意图。\n\n"
+                )
+        if web_context:
+            context_prefix += "## 实时联网检索信息（可信的当前事实，重写时结合）\n" + web_context[:2000] + "\n\n"
+        if knowledge_context:
+            context_prefix += "## 知识库上下文片段（可参考）\n" + knowledge_context[:2000] + "\n\n"
+
+        full_user_prompt = context_prefix + user_prompt
         result = await self.think_json_with_reasoning(
             system_prompt=REWRITER_PROMPT,
-            user_message=user_prompt,
+            user_message=full_user_prompt,
         )
 
         reasoning = result.get("reasoning", "")

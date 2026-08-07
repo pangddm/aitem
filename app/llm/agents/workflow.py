@@ -43,6 +43,7 @@ class AgentWorkflow:
         user_message: str,
         memories: list = None,
         knowledge_context: str = "",
+        web_context: str = "",
     ) -> dict:
         """
         运行完整工作流（非流式），并行执行风险评估和命令生成
@@ -62,7 +63,7 @@ class AgentWorkflow:
         if not task_plan.get("requires_execution"):
             rep_result = await self.reporter.report(
                 task_plan, {}, {}, {}, {},
-                memories=memories, knowledge_context=knowledge_context,
+                memories=memories, knowledge_context=knowledge_context, web_context=web_context,
             )
             if rep_result.get("reasoning"):
                 all_reasoning.append(f"[报告生成] {rep_result['reasoning']}")
@@ -74,7 +75,7 @@ class AgentWorkflow:
 
         # 2. 并行执行：Risk Assessor + Validator 命令生成
         risk_task = self.risk_assessor.assess(task_plan)
-        cmd_task = self.validator.generate_command(task_plan, memories=memories)
+        cmd_task = self.validator.generate_command(task_plan, memories=memories, web_context=web_context)
 
         risk_result, cmd_result = await asyncio.gather(risk_task, cmd_task)
 
@@ -100,7 +101,7 @@ class AgentWorkflow:
         if validation.get("is_blocked"):
             rep_result = await self.reporter.report(
                 task_plan, risk_assessment, validation, {}, {},
-                memories=memories, knowledge_context=knowledge_context,
+                memories=memories, knowledge_context=knowledge_context, web_context=web_context,
             )
             if rep_result.get("reasoning"):
                 all_reasoning.append(f"[报告生成] {rep_result['reasoning']}")
@@ -114,14 +115,14 @@ class AgentWorkflow:
 
         # 4. Executor — 执行命令（带反馈循环）
         execution_result, observation = await self._execute_with_feedback(
-            task_plan, validation, risk_assessment, memories=memories
+            task_plan, validation, risk_assessment, memories=memories, knowledge_context=knowledge_context, web_context=web_context
         )
 
         # 5. Reporter — 汇总报告
         rep_result = await self.reporter.report(
             task_plan, risk_assessment, validation,
             execution_result, observation,
-            memories=memories, knowledge_context=knowledge_context,
+            memories=memories, knowledge_context=knowledge_context, web_context=web_context,
         )
         if rep_result.get("reasoning"):
             all_reasoning.append(f"[报告生成] {rep_result['reasoning']}")
@@ -137,7 +138,7 @@ class AgentWorkflow:
         }
 
     async def _execute_with_feedback(
-        self, task_plan: dict, validation: dict, risk_assessment: dict, memories: list = None
+        self, task_plan: dict, validation: dict, risk_assessment: dict, memories: list = None, knowledge_context: str = "", web_context: str = ""
     ) -> tuple:
         """
         执行命令 + Observer 观察，支持反馈循环
@@ -160,6 +161,8 @@ class AgentWorkflow:
                 retry_cmd = await self.validator.generate_command_with_feedback(
                     task_plan=task_plan,
                     memories=memories,
+                    knowledge_context=knowledge_context,
+                    web_context=web_context,
                     previous_command=validation["command"],
                     execution_output=execution_result.get("result", ""),
                     observation_feedback=observation.get("retry_suggestion", ""),
@@ -183,6 +186,7 @@ class AgentWorkflow:
         user_message: str,
         memories: list = None,
         knowledge_context: str = "",
+        web_context: str = "",
         host: str = None,
         port: int = None,
         username: str = None,
@@ -222,7 +226,13 @@ class AgentWorkflow:
             # 0. CommandRewriter — 重写用户模糊问题
             yield {"type": "workflow_status", "stage": "rewriter", "message": "正在理解您的问题..."}
             print("[Workflow Stream] 步骤0: CommandRewriter 重写用户问题...")
-            rewrite_result = await self.command_rewriter.rewrite(user_message, conversation_history=conversation_history)
+            rewrite_result = await self.command_rewriter.rewrite(
+                user_message, 
+                conversation_history=conversation_history,
+                memories=memories,
+                knowledge_context=knowledge_context,
+                web_context=web_context,
+            )
             rewritten_message = rewrite_result.get("rewritten", user_message)
             if rewrite_result["reasoning"]:
                 yield {"type": "reasoning", "agent": "command_rewriter", "content": rewrite_result["reasoning"]}
@@ -250,7 +260,13 @@ class AgentWorkflow:
             yield {"type": "workflow_status", "stage": "orchestrator", "message": "正在分析意图..."}
             print("[Workflow Stream] 步骤1: Orchestrator 分析意图...")
             try:
-                orc_result = await self.orchestrator.analyze(rewritten_message, conversation_history=conversation_history)
+                orc_result = await self.orchestrator.analyze(
+                    rewritten_message,
+                    conversation_history=conversation_history,
+                    memories=memories,
+                    knowledge_context=knowledge_context,
+                    web_context=web_context,
+                )
                 task_plan = orc_result["task_plan"]
                 print(f"[Workflow Stream] task_plan: {task_plan}")
                 if orc_result["reasoning"]:
@@ -284,6 +300,13 @@ class AgentWorkflow:
                 yield {"type": "workflow_status", "stage": "reporter", "message": "正在生成回答..."}
                 # 使用聊天式 prompt，让回答更自然
                 chat_prompt = "你是 Kubedoctor，一个友好的 Kubernetes 运维助手。请用自然、对话式的中文回答用户的问题。不要使用报告格式，就像朋友聊天一样。如果用户问的是技术问题，给出专业但易懂的回答。"
+                if web_context:
+                    from datetime import datetime as _dt
+                    _today = _dt.now().strftime("%Y-%m-%d")
+                    chat_prompt += (
+                        f"\n\n今天是 {_today}。下面是今天实时联网检索到的信息（可信）：\n{web_context}\n"
+                        f"规则：对“现在/最新/最火/{_today}年”这类时效性问题，必须以上述实时检索信息和今天日期为准给出当前答案，不要使用过时的内置知识作答；如果搜索信息不足以回答，请明确指出并说明信息截止时间。"
+                    )
                 if knowledge_context:
                     chat_prompt += f"\n\n参考知识库：\n{knowledge_context}"
                 if conversation_history:
@@ -318,7 +341,7 @@ class AgentWorkflow:
             yield {"type": "workflow_status", "stage": "risk_validator", "message": "正在评估风险并生成命令..."}
             print("[Workflow Stream] 步骤2: 并行执行风险评估 + 命令生成...")
             risk_task = self.risk_assessor.assess(task_plan)
-            cmd_task = self.validator.generate_command(task_plan, memories=memories)
+            cmd_task = self.validator.generate_command(task_plan, memories=memories, knowledge_context=knowledge_context, web_context=web_context)
 
             risk_result, cmd_result = await asyncio.gather(risk_task, cmd_task)
             print(f"[Workflow Stream] risk_result keys: {list(risk_result.keys())}")
@@ -575,6 +598,8 @@ class AgentWorkflow:
                 fix_options = await self._generate_fix_options(
                     task_plan=task_plan,
                     memories=memories,
+                    knowledge_context=knowledge_context,
+                    web_context=web_context,
                     execution_result=execution_result,
                     observation=observation,
                     all_results=all_execution_results,
@@ -688,7 +713,7 @@ class AgentWorkflow:
             async for event in self.reporter.report_stream(
                 task_plan, risk_assessment, validation,
                 execution_result, observation,
-                memories=memories, knowledge_context=knowledge_context,
+                memories=memories, knowledge_context=knowledge_context, web_context=web_context,
                 all_execution_results=all_execution_results,
                 all_observations=all_observations,
             ):
@@ -1095,6 +1120,8 @@ class AgentWorkflow:
         all_observations: list,
         iteration: int,
         memories: list = None,
+        knowledge_context: str = "",
+        web_context: str = "",
     ) -> list:
         """
         当问题未解决时，用 LLM 生成多个修复选项
@@ -1148,6 +1175,10 @@ class AgentWorkflow:
 ]
 
 只返回 JSON 数组，不要包含其他内容。"""
+
+        # 注入知识库/文档上下文，指导修复方向
+        if knowledge_context:
+            prompt += "\n\n## 知识库/文档上下文（供参考，据此判断修复方向）\n" + knowledge_context[:2500]
 
         # 注入用户偏好，让修复命令遵循用户偏好的工具
         if memories:

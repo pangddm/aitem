@@ -737,6 +737,13 @@ body.dark .composer-inner { box-shadow: 0 4px 20px rgba(0,0,0,.25); }
   font-size: 12px;
   color: var(--text-tertiary);
 }
+.flow-stage-num {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; border-radius: 50%;
+  background: var(--accent, #3b82f6); color: #fff; font-size: 11px;
+  margin-right: 6px; flex: none;
+}
+.event-block.flow-stage .event-status { margin-left: auto; }
 .event-content {
   padding: 8px 12px;
   max-height: 200px;
@@ -909,16 +916,14 @@ body.dark .composer-inner { box-shadow: 0 4px 20px rgba(0,0,0,.25); }
   font-size: 12px;
 }
 .exec-status-text {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 6px 14px;
-  font-size: 12px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
   color: var(--text-secondary);
   font-weight: 600;
-  background: var(--main-bg);
-  border-bottom: 1px solid var(--border);
 }
 .report-download-btn {
   display: inline-flex;
@@ -1472,25 +1477,27 @@ body.dark .composer-inner { box-shadow: 0 4px 20px rgba(0,0,0,.25); }
   transition: color 0.25s;
 }
 .flow-connector {
-  flex: 0 1 22px;
-  height: 2px;
-  margin: 0 8px;
-  background: var(--border);
-  border-radius: 2px;
-  transition: background 0.25s;
+  flex: 0 0 auto;
+  font-size: 14px;
+  line-height: 1;
+  margin: 0 4px;
+  color: var(--text-tertiary);
+  font-weight: 700;
+  transition: color 0.25s;
 }
+.flow-connector::before { content: "→"; }
+.flow-connector.done { color: rgba(34, 197, 94, 0.85); }
 .flow-step.active .flow-dot {
   border-color: var(--accent);
   color: var(--accent);
 }
 .flow-step.active .flow-label { color: var(--accent); }
 .flow-step.done .flow-dot {
-  background: var(--green);
-  border-color: var(--green);
-  color: #fff;
+  background: rgba(34, 197, 94, 0.18);
+  border-color: rgba(34, 197, 94, 0.55);
+  color: var(--green);
 }
 .flow-step.done .flow-label { color: var(--green); }
-.flow-connector.done { background: var(--green); }
 
 /* 每一步的思考内容 */
 .exec-steps {
@@ -1498,6 +1505,7 @@ body.dark .composer-inner { box-shadow: 0 4px 20px rgba(0,0,0,.25); }
   background: var(--main-bg);
   max-height: 360px;
   overflow-y: auto;
+  transition: max-height 0.3s ease, padding 0.3s ease;
 }
 .exec-step {
   border-left: 2px solid var(--border);
@@ -1545,19 +1553,28 @@ body.dark .composer-inner { box-shadow: 0 4px 20px rgba(0,0,0,.25); }
   border-radius: 6px;
 }
 
-/* 处理过程折叠（默认折叠，状态栏右侧小三角展开） */
+/* 处理过程折叠：流程与状态条始终显示，仅折叠细节 */
 .exec-box-body { background: var(--main-bg); }
-.execution-log.collapsed .exec-box-body { display: none; }
-.exec-status-bar .exec-status-text { flex: 1; }
+.exec-detail { background: var(--main-bg); }
+.exec-box.detail-collapsed .exec-steps {
+  max-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  overflow: hidden;
+}
 .exec-box-toggle {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 6px;
   border: none;
-  background: transparent;
+  background: var(--sidebar-bg);
   color: var(--text-tertiary);
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
-  padding: 2px 6px;
-  border-radius: 5px;
+  padding: 6px 14px;
+  border-radius: 0;
   white-space: nowrap;
   transition: background 0.2s, color 0.2s;
 }

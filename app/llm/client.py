@@ -1,10 +1,10 @@
 """
 LLM 客户端 — 支持多模型自动切换
 当 flash 模型连接失败时自动切换到 pro 模型
-使用线程本地存储避免并发请求互相干扰
+使用 contextvars 实现每请求独立的模型状态（asyncio 并发安全）
 """
-import asyncio
-import threading
+import contextvars
+from types import SimpleNamespace
 from openai import AsyncOpenAI
 from app.core.config import (
     DEEPSEEK_API_KEY,
@@ -29,21 +29,31 @@ MODEL_CONFIGS = [
     },
 ]
 
-# 每个请求独立的模型状态（线程本地存储）
-_request_local = threading.local()
+# 每个请求独立的模型状态（contextvars，asyncio 按任务隔离）
+_request_state: contextvars.ContextVar = contextvars.ContextVar(
+    "llm_request_state", default=None
+)
+
+
+def _new_state():
+    """构造一份全新的模型状态"""
+    return SimpleNamespace(
+        model_index=0,
+        failed_models=set(),
+        client=AsyncOpenAI(
+            api_key=API_KEY,
+            base_url=MODEL_CONFIGS[0]["base_url"],
+        ),
+    )
 
 
 def _get_state():
-    """获取当前请求的模型状态，首次访问时初始化"""
-    if not hasattr(_request_local, "initialized"):
-        _request_local.model_index = 0
-        _request_local.failed_models = set()
-        _request_local.client = AsyncOpenAI(
-            api_key=API_KEY,
-            base_url=MODEL_CONFIGS[0]["base_url"],
-        )
-        _request_local.initialized = True
-    return _request_local
+    """获取当前请求的模型状态，首次访问时在当次请求上下文中创建"""
+    state = _request_state.get()
+    if state is None:
+        state = _new_state()
+        _request_state.set(state)
+    return state
 
 
 def get_client():
@@ -110,12 +120,6 @@ async def switch_to_next_model() -> bool:
 
 
 def reset_model_state():
-    """重置当前请求的模型状态"""
-    state = _get_state()
-    state.model_index = 0
-    state.failed_models.clear()
-    state.client = AsyncOpenAI(
-        api_key=API_KEY,
-        base_url=MODEL_CONFIGS[0]["base_url"],
-    )
+    """重置当前请求的模型状态（在当次请求上下文中新建一份）"""
+    _request_state.set(_new_state())
     print("[LLM] 模型状态已重置")

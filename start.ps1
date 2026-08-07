@@ -25,10 +25,19 @@ Write-Host "[1/3] Docker services ready."
 # ===============================
 Write-Host "[2/3] Starting FastAPI..."
 
+# 读取 worker 数（默认 4，可用 .env 的 WEB_WORKERS 覆盖）
+$workers = $env:WEB_WORKERS
+if (-not $workers) {
+    try {
+        $workers = (Get-Content "$PSScriptRoot\.env" | Where-Object { $_ -match '^WEB_WORKERS=' }) -split '=',2 | Select-Object -Last 1
+    } catch { $workers = $null }
+}
+if (-not $workers) { $workers = "4" }
+
 Start-Process powershell -ArgumentList @(
     '-NoExit',
     '-Command',
-    'conda activate aitem; uvicorn main:app --reload'
+    "conda activate aitem; uvicorn main:app --workers $workers --host 0.0.0.0 --port 8000"
 )
 
 Write-Host "[2/3] FastAPI process started."

@@ -33,7 +33,7 @@ POSTGRES_USER = os.getenv("POSTGRES_USER", "postgres")
 POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "")
 POSTGRES_DB = os.getenv("POSTGRES_DB", "kubedoctor")
 POSTGRES_POOL_MIN = _int(os.getenv("POSTGRES_POOL_MIN"), 2)
-POSTGRES_POOL_MAX = _int(os.getenv("POSTGRES_POOL_MAX"), 10)
+POSTGRES_POOL_MAX = _int(os.getenv("POSTGRES_POOL_MAX"), 20)
 
 MYSQL_HOST = os.getenv("MYSQL_HOST", "127.0.0.1")
 MYSQL_PORT = _int(os.getenv("MYSQL_PORT"), 3306)
@@ -54,6 +54,10 @@ NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "")
 # 控制「聊天过程中的记忆图 / 工具审计图」写入，默认开启。
 # 集群拓扑索引（定时读取集群信息并写入 Neo4j 用于拓扑展示）始终开启，不受此开关影响。
 NEO4J_WRITE_ENABLED = _bool(os.getenv("NEO4J_WRITE_ENABLED"), "true")
+
+# ───────────── Web 服务（多 worker 并发） ─────────────
+WEB_WORKERS = _int(os.getenv("WEB_WORKERS"), 4)
+
 
 # ───────────── 大模型 LLM ─────────────
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")

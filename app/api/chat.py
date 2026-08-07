@@ -145,6 +145,8 @@ async def _ingest_to_knowledge_base(owner: str, file_path: str):
 
 @router.post("/chat")
 async def chat(request: ChatRequest):
+    from app.llm.client import reset_model_state
+    reset_model_state()
     return await chat_with_agent(user_id=request.user_id, user_message=request.message)
 
 
@@ -188,10 +190,15 @@ async def chat_stream(
     THINKING_EVENT_TYPES = {
         "reasoning", "task_plan", "risk_assessment", "validation",
         "tool_call", "tool_result", "observation", "retry_loop",
+        "answer_reasoning", "command_rewritten",
     }
+    # 整体看门狗：整条流式流程最长等待时间，超时则终止避免无限挂起
+    OVERALL_STREAM_TIMEOUT = 300
 
     async def event_stream():
         nonlocal auto_learn_data
+        from app.llm.client import reset_model_state
+        reset_model_state()
         try:
             memory_service = await get_memory_service()
             memories = await memory_service.search(owner=user_id, query=message)
@@ -212,6 +219,7 @@ async def chat_stream(
 
         # 联网搜索：把实时搜索结果注入上下文（不阻塞、失败静默降级）
         print(f"[WebSearch] 开关={web_search}")
+        web_context = ""
         if web_search:
             try:
                 yield f"data: {_json.dumps({'type': 'web_search', 'query': message, 'content': '正在联网搜索...'}, ensure_ascii=False)}\n\n"
@@ -219,16 +227,13 @@ async def chat_stream(
                 pass
             print(f"[WebSearch] 开始实时搜索: {message}")
             web_info = await _web_search(message)
-            print(f"[WebSearch] 返回 {len(web_info)} 字符，注入上下文={bool(web_info)}")
-            if web_info:
-                knowledge_context = f"【联网搜索结果（实时，供参考）】\n{web_info}\n\n" + knowledge_context
-            else:
-                knowledge_context = "【联网搜索本次未返回结果，请主要依据自身知识回答】\n\n" + knowledge_context
+            web_context = web_info or ""
+            print(f"[WebSearch] 返回 {len(web_context)} 字符（作为独立实时上下文注入）")
             try:
                 yield f"data: {_json.dumps({'type': 'web_search', 'query': message, 'content': web_info or '(无结果)'}, ensure_ascii=False)}\n\n"
             except Exception:
                 pass
-        print(f"[Context] 注入 AI 的上下文共 {len(knowledge_context)} 字符")
+        print(f"[Context] 注入 AI 的上下文共 {len(knowledge_context)} 字符，实时联网 {len(web_context)} 字符")
 
         # 获取对话历史（用于 CommandRewriter 上下文理解）
         conversation_history = []
@@ -255,6 +260,7 @@ async def chat_stream(
                 user_message=message,
                 memories=memories,
                 knowledge_context=knowledge_context,
+                web_context=web_context,
                 host=host,
                 port=port,
                 username=ssh_user,
@@ -274,6 +280,7 @@ async def chat_stream(
                         "command": event.get("command"),
                         "result": event.get("result"),
                         "success": event.get("success"),
+                        "agent": event.get("agent", ""),
                     })
 
                 # 收集自动学习所需数据
@@ -365,7 +372,6 @@ async def chat_stream(
     )
 
 
-@router.post("/chat_with_document")
 async def _stream_workflow_events(
     user_id: str,
     user_message: str,
@@ -384,19 +390,36 @@ async def _stream_workflow_events(
     THINKING_EVENT_TYPES = {
         "reasoning", "task_plan", "risk_assessment", "validation",
         "tool_call", "tool_result", "observation", "retry_loop",
+        "answer_reasoning", "command_rewritten",
     }
     all_chunks = []
     thinking_chain = []
     auto_learn_data = {"task_plan": None, "execution_result": None, "observation": None}
     try:
         workflow = AgentWorkflow()
-        async for event in workflow.run_stream(
+        agen = workflow.run_stream(
             user_id=user_id,
             user_message=user_message,
             memories=memories,
             knowledge_context=knowledge_context,
             conversation_history=conversation_history,
-        ):
+        )
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + OVERALL_STREAM_TIMEOUT
+        timed_out = False
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                timed_out = True
+                break
+            try:
+                event = await asyncio.wait_for(agen.__anext__(), timeout=remaining)
+            except StopAsyncIteration:
+                break
+            except asyncio.TimeoutError:
+                timed_out = True
+                break
+
             ct = event.get("content", "")
             if event.get("type") == "answer_chunk" and ct:
                 all_chunks.append(str(ct))
@@ -409,6 +432,7 @@ async def _stream_workflow_events(
                     "command": event.get("command"),
                     "result": event.get("result"),
                     "success": event.get("success"),
+                    "agent": event.get("agent", ""),
                 })
 
             if evt_type == "task_plan":
@@ -423,6 +447,14 @@ async def _stream_workflow_events(
                 auto_learn_data["observation"] = event.get("content", {})
 
             yield event
+
+        if timed_out:
+            try:
+                await agen.aclose()
+            except Exception:
+                pass
+            print("[SSE] 整体流式流程超时，强制终止")
+            yield {"type": "error", "content": "⚠️ AI 处理超时（长时间无响应，通常是 LLM 服务不可达或网络问题）。请稍后重试，或检查 LLM API 配置。"}
     except Exception as e:
         print(f"[SSE] Stream error: {type(e).__name__}: {e}")
         traceback.print_exc()
@@ -533,6 +565,8 @@ async def chat_with_document(
     actual_conv_id = conv["id"]
 
     async def event_stream():
+        from app.llm.client import reset_model_state
+        reset_model_state()
         try:
             memory_service = await get_memory_service()
             memories = await memory_service.search(owner=user_id, query=message)

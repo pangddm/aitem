@@ -133,6 +133,25 @@ async def _run_topology_loop():
                 break
 
 
+def _acquire_leader_lock(name: str, ttl: int = 3600) -> bool:
+    """用 Redis SETNX 抢占“仅一个 worker 运行”的任务锁，返回是否抢占成功。"""
+    from app.db.redis import redis_client
+    try:
+        key = f"kubedoctor:job-leader:{name}"
+        return bool(redis_client.client.set(key, "1", nx=True, ex=ttl))
+    except Exception as e:
+        print(f"[Leader] 获取主节点锁失败 {name}: {type(e).__name__}: {e}")
+        return True  # 降级：Redis 不可用时由当前 worker 照常运行
+
+
+def _release_leader_lock(name: str) -> None:
+    from app.db.redis import redis_client
+    try:
+        redis_client.client.delete(f"kubedoctor:job-leader:{name}")
+    except Exception:
+        pass
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await postgres.connect()
@@ -140,21 +159,33 @@ async def lifespan(app: FastAPI):
     await neo4j.connect()
     await init_database(postgres.pool)
 
-    # 启动 Memory 衰减后台任务
-    decay_task = asyncio.create_task(_run_decay_loop())
-    # 启动集群拓扑定时重建
-    topology_task = asyncio.create_task(_run_topology_loop())
+    # 多 worker 下每个 worker 都会执行 lifespan，用 Redis 锁保证后台任务只在一个 worker 运行。
+    decay_leader = _acquire_leader_lock("decay")
+    topology_leader = _acquire_leader_lock("topology")
+    decay_task = asyncio.create_task(_run_decay_loop()) if decay_leader else None
+    topology_task = asyncio.create_task(_run_topology_loop()) if topology_leader else None
+    if not decay_leader:
+        print("[Leader] Memory 衰减任务由其它 worker 运行，本 worker 跳过")
+    if not topology_leader:
+        print("[Leader] 拓扑重建任务由其它 worker 运行，本 worker 跳过")
 
     yield
 
     # 取消后台任务
-    decay_task.cancel()
-    topology_task.cancel()
+    if decay_task is not None:
+        decay_task.cancel()
+    if topology_task is not None:
+        topology_task.cancel()
     for t in (decay_task, topology_task):
-        try:
-            await t
-        except asyncio.CancelledError:
-            pass
+        if t is not None:
+            try:
+                await t
+            except asyncio.CancelledError:
+                pass
+    if decay_leader:
+        _release_leader_lock("decay")
+    if topology_leader:
+        _release_leader_lock("topology")
 
     await embedding.close()
     await postgres.close()

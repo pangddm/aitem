@@ -74,7 +74,7 @@ class Orchestrator(BaseAgent):
     def __init__(self):
         super().__init__(name="orchestrator")
 
-    async def analyze(self, user_message: str, conversation_history: list = None) -> dict:
+    async def analyze(self, user_message: str, conversation_history: list = None, memories: list = None, knowledge_context: str = "", web_context: str = "") -> dict:
         """
         分析用户意图，返回包含 task_plan 和 reasoning 的字典
         
@@ -101,6 +101,33 @@ class Orchestrator(BaseAgent):
 用户当前问题：{user_message}
 
 请基于以上对话历史分析用户意图。"""
+        
+        # 注入长期记忆与知识上下文，帮助判断是否需要真正执行集群命令
+        context_prefix = ""
+        if memories:
+            mem_lines = []
+            for m in memories[:8]:
+                desc = getattr(m, "content", None)
+                if desc is None:
+                    if isinstance(m, (tuple, list)) and m:
+                        desc = m[0]
+                    else:
+                        desc = m
+                if desc:
+                    mem_lines.append("- " + str(desc))
+            if mem_lines:
+                context_prefix += (
+                    "## 检索到的用户长期记忆（可能直接回答了问题或明确了所指对象）：\n"
+                    + "\n".join(mem_lines)
+                    + "\n\n若用户问题是在引用记忆中的概念/模板/缩写，或记忆中的内容已能回答用户，"
+                      "请将 requires_execution 设为 false，intent 设为 chat 或 query，task_type 设为 other，"
+                      "不要编造去集群查询的命令。\n\n"
+                )
+        if web_context:
+            context_prefix += "## 实时联网检索信息（可信的当前事实，用于判断意图/是否需要执行时结合）\n" + web_context[:2000] + "\n\n"
+        if knowledge_context:
+            context_prefix += "## 知识库/文档上下文片段（可参考）\n" + knowledge_context[:2500] + "\n\n"
+        prompt = context_prefix + prompt
         
         result = await self.think_json_with_reasoning(
             system_prompt=ORCHESTRATOR_PROMPT,
