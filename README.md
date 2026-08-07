@@ -4,14 +4,47 @@ AI 驱动的 Kubernetes 集群智能运维助手。以对话的方式理解你�
 
 ## 功能特性
 
-- 💬 **对话式运维**：多轮对话，支持流式回复、思考链展示、报告下载
+- 💬 **对话式运维**：多轮对话，流式回复、报告下载
 - 🧠 **多级记忆**：短期记忆（Redis）+ 长期记忆（PostgreSQL + Neo4j 图），定时衰减与合并
 - 📚 **知识库 RAG**：文档上传、向量化、语义检索、上下文增强；多模态图片解析
 - 🔍 **智能工作流**：问题重写 → 意图分析 → 命令生成 → 风险评估 → 逐步执行 → 结果观察
-- 🎛 **多 Agent 协作**：CommandRewriter / Orchestrator / 工具调用白名单 / 失败重试机制
-- 🕸 **集群拓扑可视化**：实时读取 K8s 集群，生成可交互拓扑图（命名空间/工作负载/Pod/服务）
+- 🎛 **多 Agent 协作**：CommandRewriter / Orchestrator / 工具调用白名单 / 失败重试
+- 🕸 **集群拓扑可视化**：实时读取 K8s 集群，生成可交互拓扑图（命名空间 / 工作负载 / Pod / 服务）
 - 📬 **告警通知**：SMTP 邮件告警
-- ⚡ **高并发**：FastAPI 异步 + 多 worker 部署，连接池调优（详见「部署」章节）
+- ⚡ **高并发**：FastAPI 异步 + 多 worker 部署，连接池调优
+
+## 系统架构
+
+```mermaid
+flowchart LR
+    U([用户 / 前端<br/>HTML · Canvas · SSE]) -->|HTTP / 流式| API
+
+    subgraph API[FastAPI 后端 · Uvicorn 多 Worker]
+        direction TB
+        RT[API 路由<br/>chat / kb / document / conversation / auth / topology]
+        WF[Agent 工作流<br/>问题重写 → 意图分析 → 命令生成<br/>风险评估 → 执行 → 报告]
+        RT --> WF
+    end
+
+    API --> LLM[[LLM 客户端<br/>DeepSeek / DashScope]]
+    API --> EMB[[Embedding<br/>Jina / BGE / OpenAI]]
+    API --> EXEC{{执行器<br/>kubectl / SSH}}
+    API --> MAIL{{SMTP 告警}}
+
+    EXEC --> K8S[\ Kubernetes 集群 \]
+    EXEC --> HOST[\ 远程主机 \]
+
+    PG[(PostgreSQL<br/>业务数据 · pgvector)]
+    MY[(MySQL<br/>用户 / 会话)]
+    RD[(Redis<br/>短期记忆 · 缓存)]
+    NE[(Neo4j<br/>记忆 / 拓扑图)]
+
+    PG -->|RAG 检索| API
+    PG -->|长期记忆| API
+    MY --> API
+    RD -->|短期记忆| API
+    NE -->|图谱| API
+```
 
 ## 技术栈
 
@@ -21,7 +54,7 @@ AI 驱动的 Kubernetes 集群智能运维助手。以对话的方式理解你�
 | 前端 | 原生 HTML / CSS / JS（Canvas 拓扑图） |
 | 数据库 | PostgreSQL (pgvector) · MySQL · Redis |
 | 图数据库 | Neo4j |
-| 大模型 | DeepSeek（OpenAI 兼容接口）、阿里云 DashScope 多模态 |
+| 大模型 | DeepSeek（OpenAI 兼容）、阿里云 DashScope 多模态 |
 | 向量 | Jina / BGE / OpenAI Embedding |
 | 执行 | kubectl · paramiko(SSH) |
 | 部署 | Docker Compose · Conda |
@@ -47,8 +80,7 @@ aitem/
 │   ├── tools/           # 外部工具（SSH / 邮件等）
 │   └── services/        # 业务服务
 ├── web/static/          # 前端（index.html / app.js / style.css）
-├── scripts/             # 运维与迁移脚本
-└── tests/               # 测试
+└── scripts/             # 运维与迁移脚本
 ```
 
 ## 快速开始
