@@ -1920,60 +1920,78 @@ const App = {
       this.showToast(this.language === "en" ? "Voice input is not supported in this browser. Please use Chrome or Edge." : "当前浏览器不支持语音输入，请使用 Chrome/Edge");
       return;
     }
+    const btn = this.el.voiceBtn;
+    // 正在聆听：再次点击表示停止
+    if (this._listening) {
+      this._listening = false;
+      try { this._recognition.stop(); } catch (err) {}
+      if (btn) { btn.classList.remove("active"); btn.title = "语音输入"; }
+      this.showToast(this.language === "en" ? "Voice input stopped" : "已停止语音输入");
+      return;
+    }
+    // 开始聆听：清空本次累积文本
+    this._voiceText = "";
+    this._listening = true;
+    if (btn) { btn.classList.add("active"); btn.title = "语音输入（正在聆听…）"; }
+    const safeStart = () => {
+      try { this._recognition.start(); } catch (err) {}
+    };
     if (!this._recognition) {
       const rec = new SR();
       rec.lang = "zh-CN";
       rec.interimResults = true;
-      rec.continuous = false;
+      rec.continuous = true;
       rec.onresult = (e) => {
-        let text = "";
+        let interim = "";
+        let finals = "";
         for (let i = 0; i < e.results.length; i++) {
-          text += e.results[i][0].transcript;
+          const r = e.results[i];
+          if (r.isFinal) finals += r[0].transcript;
+          else interim += r[0].transcript;
         }
+        if (finals) this._voiceText = (this._voiceText || "") + finals;
+        const base = this._voiceText || "";
+        const shown = base ? (base + (interim ? (" " + interim) : "")) : interim;
         if (this.el.messageInput) {
-          this.el.messageInput.value = text;
+          this.el.messageInput.value = shown;
           this.autoResize(this.el.messageInput);
         }
       };
       rec.onend = () => {
-        this._listening = false;
-        const btn = this.el.voiceBtn;
-        if (btn) {
-          btn.classList.remove("active");
-          btn.title = "语音输入";
+        // 用户仍想聆听：自动结束后自动重启，保持持续识别，不会过一会就停
+        if (this._listening) {
+          setTimeout(() => {
+            if (this._listening) {
+              try { rec.start(); } catch (err) {}
+            }
+          }, 300);
+          return;
+        }
+        // 主动停止：恢复输入框内容并复位按钮
+        const b = this.el.voiceBtn;
+        if (b) { b.classList.remove("active"); b.title = "语音输入"; }
+        if (this.el.messageInput && this._voiceText) {
+          this.el.messageInput.value = this._voiceText;
+          this.autoResize(this.el.messageInput);
         }
       };
       rec.onerror = (e) => {
-        this._listening = false;
-        const b = this.el.voiceBtn;
-        if (b) { b.classList.remove("active"); b.title = "语音输入"; }
         if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+          this._listening = false;
+          const b = this.el.voiceBtn;
+          if (b) { b.classList.remove("active"); b.title = "语音输入"; }
           this.showToast(this.language === "en" ? "Microphone permission denied. Please allow it in the browser and retry." : "未获得麦克风权限，请在浏览器地址栏允许麦克风后重试");
+        } else if (e.error === "no-speech") {
+          // 未检测到语音：等待 onend 自动重启继续聆听
+          return;
         } else {
           this.showToast(this.language === "en" ? ("Voice error: " + e.error) : ("语音识别出错: " + e.error));
         }
       };
       this._recognition = rec;
     }
-    const rec = this._recognition;
-    const btn = this.el.voiceBtn;
-    if (this._listening) {
-      rec.stop();
-      return;
-    }
-    this._listening = true;
-    if (btn) {
-      btn.classList.add("active");
-      btn.title = "语音输入（正在聆听…）";
-    }
-    try {
-      rec.start();
-      this.showToast(this.language === "en" ? "🎤 Listening... speak now" : "🎤 正在聆听，请说话...");
-    } catch (err) {
-      this._listening = false;
-      if (btn) btn.classList.remove("active");
-      this.showToast(this.language === "en" ? "Voice start failed: " + err.message : "语音启动失败: " + err.message);
-    }
+    safeStart();
+    this.showToast(this.language === "en" ? "🎤 Listening continuously... speak anytime; tap again to stop" : "🎤 正在持续聆听，随时说话；再点一次停止");
   },
   stopStream() {
     if (this.state.abortCtrl) {
