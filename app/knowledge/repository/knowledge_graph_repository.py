@@ -5,6 +5,7 @@ from typing import Any
 
 from app.knowledge.models import Incident
 from app.memory.graph.schema import NodeType, RelationType
+from app.core.retry import db_retry
 
 
 class KnowledgeGraphRepository:
@@ -76,6 +77,7 @@ class KnowledgeGraphRepository:
     # 入库时建图
     # ==========================================================
 
+    @db_retry
     async def insert_incident_graph(self, incident: Incident) -> None:
         """
         将一条 Incident 写入 Neo4j，并建立:
@@ -169,6 +171,7 @@ class KnowledgeGraphRepository:
     # 检索时图扩展
     # ==========================================================
 
+    @db_retry
     async def search_related_incidents(
         self,
         kb_id: str,
@@ -258,6 +261,7 @@ class KnowledgeGraphRepository:
     # 删除
     # ==========================================================
 
+    @db_retry
     async def delete_incident_graph(self, incident_id: str) -> None:
         async with self.driver.session() as session:
             await session.run(

@@ -22,6 +22,8 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 
 CHAT_KB_NAME = "聊天文档"  # 聊天文档专用的知识库名称
+# 整条流式流程最长等待时间（秒），超时则终止，避免无限挂起
+OVERALL_STREAM_TIMEOUT = 300
 
 
 async def _web_search(query: str, top: int = 5) -> str:
@@ -191,8 +193,6 @@ async def chat_stream(
         "tool_call", "tool_result", "observation", "retry_loop",
         "answer_reasoning", "command_rewritten",
     }
-    # 整体看门狗：整条流式流程最长等待时间，超时则终止避免无限挂起
-    OVERALL_STREAM_TIMEOUT = 300
 
     async def event_stream():
         nonlocal auto_learn_data

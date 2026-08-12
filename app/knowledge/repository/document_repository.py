@@ -8,6 +8,7 @@ import asyncpg
 from app.knowledge.models import Document, DocumentStatus
 
 
+from app.core.retry import db_retry, retry_db
 class DocumentRepository:
 
     def __init__(self, pool: asyncpg.Pool):
@@ -17,75 +18,78 @@ class DocumentRepository:
         self,
         document: Document,
     ) -> None:
+        async def _op():
 
-        async with self.pool.acquire() as conn:
+            async with self.pool.acquire() as conn:
 
-            await conn.execute(
-                """
-                INSERT INTO document(
+                await conn.execute(
+                    """
+                    INSERT INTO document(
 
-                    id,
-                    owner,
-                    kb_id,
+                        id,
+                        owner,
+                        kb_id,
 
-                    filename,
-                    mime_type,
-                    file_size,
-                    source,
+                        filename,
+                        mime_type,
+                        file_size,
+                        source,
 
-                    origin_text,
-                    ocr_text,
+                        origin_text,
+                        ocr_text,
 
-                    content_hash,
+                        content_hash,
 
-                    parse_status,
+                        parse_status,
 
-                    metadata,
+                        metadata,
 
-                    created_at,
-                    updated_at
+                        created_at,
+                        updated_at
 
+                    )
+
+                    VALUES(
+
+                        $1,$2,$3,
+
+                        $4,$5,$6,$7,
+
+                        $8,$9,
+
+                        $10,
+
+                        $11,
+
+                        $12,
+
+                        $13,$14
+                    )
+                    """,
+                    document.id,
+                    UUID(document.owner),
+                    document.kb_id,
+
+                    document.filename,
+                    document.mime_type,
+                    document.file_size,
+                    document.source,
+
+                    document.origin_text,
+                    document.ocr_text,
+
+                    document.content_hash,
+
+                    document.parse_status.value,
+
+                    document.metadata,
+
+                    document.created_at,
+                    document.updated_at,
                 )
 
-                VALUES(
-
-                    $1,$2,$3,
-
-                    $4,$5,$6,$7,
-
-                    $8,$9,
-
-                    $10,
-
-                    $11,
-
-                    $12,
-
-                    $13,$14
-                )
-                """,
-                document.id,
-                UUID(document.owner),
-                document.kb_id,
-
-                document.filename,
-                document.mime_type,
-                document.file_size,
-                document.source,
-
-                document.origin_text,
-                document.ocr_text,
-
-                document.content_hash,
-
-                document.parse_status.value,
-
-                document.metadata,
-
-                document.created_at,
-                document.updated_at,
-            )
-
+        await retry_db(_op)
+    @db_retry
     async def get_by_hash(
         self,
         owner: str,
@@ -101,6 +105,8 @@ class DocumentRepository:
                 FROM document
                 WHERE owner=$1
                   AND content_hash=$2
+                ORDER BY
+                  CASE WHEN parse_status='completed' THEN 0 ELSE 1 END
                 LIMIT 1
                 """,
                 UUID(owner),
@@ -112,6 +118,7 @@ class DocumentRepository:
 
         return self._convert(row)
 
+    @db_retry
     async def get(
         self,
         document_id: str,
@@ -135,6 +142,7 @@ class DocumentRepository:
 
         return self._convert(row)
 
+    @db_retry
     async def list_by_kb(
         self,
         kb_id: str,
@@ -160,6 +168,7 @@ class DocumentRepository:
             for row in rows
         ]
 
+    @db_retry
     async def update_progress(
         self,
         document_id: str,
@@ -186,6 +195,7 @@ class DocumentRepository:
                 datetime.utcnow(),
             )
 
+    @db_retry
     async def update_status(
         self,
         document_id: str,
@@ -206,6 +216,7 @@ class DocumentRepository:
                 status.value,
             )
 
+    @db_retry
     async def update_text(
         self,
         document_id: str,
@@ -232,6 +243,7 @@ class DocumentRepository:
                 ocr_text,
             )
 
+    @db_retry
     async def update(
         self,
         document: Document,
@@ -265,6 +277,7 @@ class DocumentRepository:
                 document.updated_at or datetime.utcnow(),
             )
 
+    @db_retry
     async def delete(
         self,
         document_id: str,
@@ -281,6 +294,7 @@ class DocumentRepository:
                 document_id,
             )
 
+    @db_retry
     async def count_by_kb(
         self,
         kb_id: str,
@@ -299,6 +313,7 @@ class DocumentRepository:
 
             return total if total else 0
 
+    @db_retry
     async def batch_delete(
         self,
         document_ids: list[str],
@@ -317,6 +332,7 @@ class DocumentRepository:
                 document_ids,
             )
 
+    @db_retry
     async def search_by_text(
         self,
         kb_id: str,
@@ -349,6 +365,45 @@ class DocumentRepository:
             self._convert(row)
             for row in rows
         ]
+
+    @db_retry
+    async def list_stale_noncompleted(
+        self,
+        older_than_hours: int = 24,
+        owner: str | None = None,
+        limit: int = 200,
+    ) -> list[Document]:
+        """列出早于 older_than_hours 且未完成（pending/processing/failed）的文档，用于惰性清理。"""
+        async with self.pool.acquire() as conn:
+            if owner:
+                rows = await conn.fetch(
+                    """
+                    SELECT *
+                    FROM document
+                    WHERE parse_status <> 'completed'
+                      AND owner = $1
+                      AND updated_at < now() - make_interval(hours => $2)
+                    ORDER BY updated_at ASC
+                    LIMIT $3
+                    """,
+                    UUID(owner),
+                    older_than_hours,
+                    limit,
+                )
+            else:
+                rows = await conn.fetch(
+                    """
+                    SELECT *
+                    FROM document
+                    WHERE parse_status <> 'completed'
+                      AND updated_at < now() - make_interval(hours => $2)
+                    ORDER BY updated_at ASC
+                    LIMIT $3
+                    """,
+                    older_than_hours,
+                    limit,
+                )
+        return [self._convert(row) for row in rows]
 
     def _convert(
         self,

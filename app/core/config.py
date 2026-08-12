@@ -68,8 +68,10 @@ DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
 DEEPSEEK_FALLBACK_MODEL = os.getenv("DEEPSEEK_FALLBACK_MODEL", "deepseek-reasoner")
 # 重排器使用的模型
 RERANK_MODEL = os.getenv("RERANK_MODEL", "deepseek-v4-flash")
+RERANK_FALLBACK_MODEL = os.getenv("RERANK_FALLBACK_MODEL", "deepseek-chat")
 # 知识抽取/记忆提取等使用的模型
 EXTRACT_MODEL = os.getenv("EXTRACT_MODEL", "deepseek-v4-flash")
+EXTRACT_FALLBACK_MODEL = os.getenv("EXTRACT_FALLBACK_MODEL", "deepseek-chat")
 
 # ───────────── Embedding 向量化 ─────────────
 EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "hybrid")
@@ -84,10 +86,15 @@ JINA_API_KEY = os.getenv("JINA_API_KEY", "")
 JINA_BASE_URL = os.getenv("JINA_BASE_URL", "https://api.jina.ai/v1/embeddings")
 JINA_MODEL = os.getenv("JINA_MODEL", "jina-embeddings-v5-text-small")
 BGE_MODEL = os.getenv("BGE_MODEL", "BAAI/bge-m3")
+# 嵌入批量分片：单次请求最多送入的文本数；超大批分片+并发，避免单请求过大
+EMBED_BATCH_SIZE = _int(os.getenv("EMBED_BATCH_SIZE"), 40)
+EMBED_BATCH_CONCURRENCY = _int(os.getenv("EMBED_BATCH_CONCURRENCY"), 3)
+
 
 # ───────────── 视觉/多模态 ─────────────
 DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY", "")
 VISION_MODEL = os.getenv("VISION_MODEL", "qwen3.5-397b-a17b")
+VISION_FALLBACK_MODEL = os.getenv("VISION_FALLBACK_MODEL", "")
 VISION_BASE_URL = os.getenv(
     "VISION_BASE_URL",
     "https://ws-desdcuc07ogrkiwd.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
@@ -110,8 +117,59 @@ MAX_AGENT_ITERATIONS = _int(os.getenv("MAX_AGENT_ITERATIONS"), 10)
 # 无进展时的强制用户选择阈值（循环保护）
 LOOP_NO_PROGRESS_LIMIT = _int(os.getenv("LOOP_NO_PROGRESS_LIMIT"), 3)
 
+# ───────────── PDF 图片/文本解析 ─────────────
+PDF_HEADER_RATIO = _float(os.getenv("PDF_HEADER_RATIO"), 0.12)
+PDF_FOOTER_RATIO = _float(os.getenv("PDF_FOOTER_RATIO"), 0.10)
+PDF_MIN_REPEAT = _int(os.getenv("PDF_MIN_REPEAT"), 2)
+PDF_MIN_IMAGE_DIM = _int(os.getenv("PDF_MIN_IMAGE_DIM"), 48)
+PDF_MIN_IMAGE_AREA = _int(os.getenv("PDF_MIN_IMAGE_AREA"), 1500)
+PDF_IMAGE_RENDER_ZOOM = _float(os.getenv("PDF_IMAGE_RENDER_ZOOM"), 2.0)
+PDF_OCR_WHOLE_PAGE = _bool(os.getenv("PDF_OCR_WHOLE_PAGE"), "true")
+PDF_TABLE_ENABLED = _bool(os.getenv("PDF_TABLE_ENABLED"), "true")
+
+# ───────────── 文档守卫（防超大文件拖垮内存）────────
+MAX_DOCUMENT_PAGES = _int(os.getenv("MAX_DOCUMENT_PAGES"), 500)
+MAX_DOCUMENT_SIZE_MB = _float(os.getenv("MAX_DOCUMENT_SIZE_MB"), 50.0)
+
+# ───────────── 切块 ─────────────
+CHUNK_SIZE = _int(os.getenv("CHUNK_SIZE"), 30000)
+CHUNK_OVERLAP = _int(os.getenv("CHUNK_OVERLAP"), 300)
+
+# ───────────── 清洗 ─────────────
+CLEANER_MASK_SENSITIVE = _bool(os.getenv("CLEANER_MASK_SENSITIVE"), "true")
+
+# ───────────── 知识抽取 ─────────────
+EXTRACT_JSON_RETRY = _int(os.getenv("EXTRACT_JSON_RETRY"), 2)
+# 篇内知识级去重：入库前按 title/summary/solution 指纹合并重复知识
+INCIDENT_DEDUP_ENABLED = _bool(os.getenv("INCIDENT_DEDUP_ENABLED"), "true")
+
+
+# ───────────── Embedding 缓存 ─────────────
+EMBEDDING_CACHE_ENABLED = _bool(os.getenv("EMBEDDING_CACHE_ENABLED"), "true")
+
+# ───────────── 通用 API 重试 / 兜底 ─────────────
+API_RETRY_ATTEMPTS = _int(os.getenv("API_RETRY_ATTEMPTS"), 3)
+API_RETRY_BASE_DELAY = _float(os.getenv("API_RETRY_BASE_DELAY"), 0.5)
+API_RETRY_MAX_DELAY = _float(os.getenv("API_RETRY_MAX_DELAY"), 8.0)
+# 数据库瞬时错误重试次数（连接丢失/死锁/序列化冲突等）
+DB_RETRY_ATTEMPTS = _int(os.getenv("DB_RETRY_ATTEMPTS"), 3)
+
+# ───────────── 检索重排 / 字段加权嵌入 ─────────────
+# 重排器类型：llm（大模型精排）| cross_encoder（本地 cross-encoder，快且便宜）
+RAG_RERANKER_TYPE = os.getenv("RAG_RERANKER_TYPE", "llm")
+CROSS_ENCODER_MODEL = os.getenv("CROSS_ENCODER_MODEL", "BAAI/bge-reranker-base")
+# 字段加权嵌入：标题在 Embedding 文本中重复次数（轻量实现 title 高权重）
+EMBED_TITLE_REPEAT = _int(os.getenv("EMBED_TITLE_REPEAT"), 2)
+
 # ───────────── 知识库检索 ─────────────
 RAG_TOP_K = _int(os.getenv("RAG_TOP_K"), 10)
+# 向量+关键词融合：weighted(现有线性加权) 或 rrf(倒数排名融合)
+RAG_HYBRID_MODE = os.getenv("RAG_HYBRID_MODE", "rrf")
+HYBRID_VECTOR_WEIGHT = _float(os.getenv("HYBRID_VECTOR_WEIGHT"), 0.7)
+HYBRID_KEYWORD_WEIGHT = _float(os.getenv("HYBRID_KEYWORD_WEIGHT"), 0.3)
+# 召回最低分阈值（过滤低相关噪音），0 表示关闭
+RAG_MIN_SCORE = _float(os.getenv("RAG_MIN_SCORE"), 0.0)
+
 RAG_RERANK_TOP_K = _int(os.getenv("RAG_RERANK_TOP_K"), 3)
 # 是否启用 LLM 精排（开启会明显变慢，失败已自动回退）
 ENABLE_RERANK = _bool(os.getenv("ENABLE_RERANK"))

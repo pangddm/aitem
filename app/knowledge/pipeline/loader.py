@@ -4,6 +4,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from app.document.limits import check_size, check_pdf_pages
+from app.document.text_utils import read_text
+
 
 @dataclass
 class LoadedDocument:
@@ -42,7 +45,7 @@ class DocumentLoader:
     }
 
     SUPPORTED_SUFFIXES = sorted(
-        set(TEXT_MIME_MAP) | {".docx", ".xlsx"}
+        set(TEXT_MIME_MAP) | {".docx", ".xlsx", ".pdf"}
     )
 
     async def load(
@@ -51,6 +54,7 @@ class DocumentLoader:
     ) -> LoadedDocument:
 
         path = Path(file_path)
+        check_size(file_path)  # 超大文件守卫
 
         suffix = path.suffix.lower()
 
@@ -64,15 +68,16 @@ class DocumentLoader:
         if suffix == ".docx":
             return self._load_docx(path)
 
+        # ── pdf ────────────────────────────────────────
+        if suffix == ".pdf":
+            return self._load_pdf(path)
+
         # ── xlsx ────────────────────────────────────────
         if suffix == ".xlsx":
             return self._load_xlsx(path)
 
-        # ── 纯文本 ──────────────────────────────────────
-        text = path.read_text(
-            encoding="utf-8",
-            errors="ignore",
-        )
+        # ── 纯文本（稳健解码，UTF-8 失败回退 GBK 等）──
+        text = read_text(str(path))
 
         mime_type = self.TEXT_MIME_MAP[suffix]
         file_size = path.stat().st_size
@@ -149,6 +154,25 @@ class DocumentLoader:
             metadata={
                 "path": str(path.absolute()),
                 "suffix": ".docx",
+            },
+        )
+
+    # ────────── pdf 解析（PyMuPDF 坐标级，剔除页眉页脚）────────
+    @staticmethod
+    def _load_pdf(path: Path) -> LoadedDocument:
+        from app.document.extractors.pdf import extract_pdf_text
+
+        check_pdf_pages(str(path))  # 超大 PDF 守卫
+        text = extract_pdf_text(str(path))
+
+        return LoadedDocument(
+            text=text,
+            filename=path.name,
+            mime_type="application/pdf",
+            file_size=path.stat().st_size,
+            metadata={
+                "path": str(path.absolute()),
+                "suffix": ".pdf",
             },
         )
 

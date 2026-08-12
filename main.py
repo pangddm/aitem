@@ -159,6 +159,23 @@ async def lifespan(app: FastAPI):
     await neo4j.connect()
     await init_database(postgres.pool)
 
+    # 惰性清理：删除长期未完成的残留文档及其 incidents（leader 单 worker 执行）
+    cleanup_leader = _acquire_leader_lock("cleanup")
+    if cleanup_leader:
+        try:
+            from app.knowledge.repository.document_repository import DocumentRepository
+            from app.knowledge.repository.incident_repository import IncidentRepository
+            doc_repo = DocumentRepository(pool=postgres.pool)
+            inc_repo = IncidentRepository(pool=postgres.pool)
+            stale = await doc_repo.list_stale_noncompleted(older_than_hours=24)
+            for doc in stale:
+                await inc_repo.delete_by_document(doc.id)
+                await doc_repo.delete(doc.id)
+            if stale:
+                print(f"[cleanup] 启动惰性清理，删除 {len(stale)} 条残留文档")
+        except Exception as e:
+            print(f"[cleanup] 启动清理失败: {type(e).__name__}: {e}")
+
     # 多 worker 下每个 worker 都会执行 lifespan，用 Redis 锁保证后台任务只在一个 worker 运行。
     decay_leader = _acquire_leader_lock("decay")
     topology_leader = _acquire_leader_lock("topology")
@@ -186,6 +203,15 @@ async def lifespan(app: FastAPI):
         _release_leader_lock("decay")
     if topology_leader:
         _release_leader_lock("topology")
+    if cleanup_leader:
+        _release_leader_lock("cleanup")
+
+    # 关闭知识模块持有且独立于 main 的 embedding 客户端
+    try:
+        from app.knowledge.factory import knowledge_factory
+        await knowledge_factory.aclose()
+    except Exception as e:
+        print(f"[shutdown] 关闭 knowledge 资源异常: {type(e).__name__}: {e}")
 
     await embedding.close()
     await postgres.close()

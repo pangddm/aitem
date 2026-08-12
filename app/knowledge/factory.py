@@ -18,6 +18,7 @@ from app.knowledge.pipeline.cleaner import TextCleaner
 from app.knowledge.pipeline.loader import DocumentLoader
 from app.knowledge.pipeline.splitter import TextSplitter
 from app.knowledge.reranker import Reranker
+from app.core.config import RAG_RERANKER_TYPE
 from app.knowledge.repository.document_repository import (
     DocumentRepository,
 )
@@ -120,11 +121,16 @@ class KnowledgeFactory:
     # ── Retriever / Reranker ──────────────────────────────
 
     @property
-    def reranker(self) -> Reranker:
+    def reranker(self):
         if self._reranker is None:
-            self._reranker = Reranker(
-                llm_client=get_client(),
-            )
+            if RAG_RERANKER_TYPE == "cross_encoder":
+                from app.knowledge.reranker import CrossEncoderReranker
+
+                self._reranker = CrossEncoderReranker()
+            else:
+                self._reranker = Reranker(
+                    llm_client=get_client(),
+                )
         return self._reranker
 
     @property
@@ -168,6 +174,24 @@ class KnowledgeFactory:
 
     def create_service(self) -> KnowledgeService:
         return self.service
+
+    async def aclose(self) -> None:
+        """关闭所有底层资源（embedding 客户端等），供应用退出时调用。"""
+        if self._embedding_service is not None:
+            try:
+                await self._embedding_service.aclose()
+            except Exception:
+                pass
+            self._embedding_service = None
+            self._embedding_model = None
+
+        try:
+            from app.llm.vision import vision_client
+            close = getattr(vision_client, "close", None)
+            if close is not None:
+                close()
+        except Exception:
+            pass
 
 
 # 全局单例

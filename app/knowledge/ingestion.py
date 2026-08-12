@@ -12,6 +12,7 @@ from app.knowledge.models import (
     Document,
     DocumentStatus,
 )
+from app.core.config import INCIDENT_DEDUP_ENABLED
 from app.knowledge.pipeline.cleaner import TextCleaner
 from app.knowledge.pipeline.loader import DocumentLoader
 from app.knowledge.pipeline.splitter import TextSplitter
@@ -76,6 +77,13 @@ class ProgressTracker:
 
 # 全局单例
 progress_tracker = ProgressTracker()
+
+
+def _fingerprint(text: str) -> str:
+    """归一化指纹：折叠空白/大小写后取 MD5，容忍轻微格式差异。"""
+    normalized = " ".join(text.split()).lower()
+    return hashlib.md5(normalized.encode("utf-8")).hexdigest()
+
 
 
 class KnowledgeIngestionService:
@@ -147,9 +155,7 @@ class KnowledgeIngestionService:
         )
 
         # ── 去重：计算文件内容 MD5，同一用户下跨知识库不重复入库 ──
-        content_hash = hashlib.md5(
-            loaded.text.encode("utf-8")
-        ).hexdigest()
+        content_hash = _fingerprint(loaded.text)
 
         existing = await self.document_repository.get_by_hash(
             owner=owner,
@@ -166,15 +172,10 @@ class KnowledgeIngestionService:
                 return await self.incident_repository.list_by_document(
                     existing.id
                 )
-            # 已存在但是失败/中断的残留记录 → 不是真重复。
-            # 清理该残留（否则每次上传都会“假重复”，RAG 里却永远没有该文件的知识），
-            # 然后重新入库。
-            if existing.parse_status in (
-                DocumentStatus.FAILED,
-                DocumentStatus.PENDING,
-            ):
-                await self.incident_repository.delete_by_document(existing.id)
-                await self.document_repository.delete(existing.id)
+            # 非 COMPLETED 一律视为失败/中断/崩溃的残留（FAILED/PENDING/PROCESSING），
+            # 清理后重新入库，避免每次上传都“假重复”或留下僵尸行。
+            await self.incident_repository.delete_by_document(existing.id)
+            await self.document_repository.delete(existing.id)
         # ── 去重结束 ──
 
         now = datetime.utcnow()
@@ -241,21 +242,31 @@ class KnowledgeIngestionService:
             # 并行提取每个 chunk（信号量控制 LLM 并发）
             async def _extract_one(text: str):
                 async with self._extract_sem:
-                    return await self.extractor.extract(
-                        kb_id=kb_id,
-                        document_id=document.id,
-                        text=text,
-                        owner=owner,
-                    )
+                    # 块级失败重试一次；仍失败则跳过该块，不影响整篇入库
+                    for attempt in range(2):
+                        try:
+                            return await self.extractor.extract(
+                                kb_id=kb_id,
+                                document_id=document.id,
+                                text=text,
+                                owner=owner,
+                            )
+                        except Exception:
+                            if attempt == 1:
+                                return []
 
             tasks = [_extract_one(chunk.text) for chunk in chunks]
-            chunk_results = await asyncio.gather(*tasks)
+            chunk_results = await asyncio.gather(*tasks, return_exceptions=True)
             all_incidents = []
             for chunk, incidents in zip(chunks, chunk_results):
+                if isinstance(incidents, Exception):
+                    continue
                 if incidents:
                     for inc in incidents:
                         inc.context_text = chunk.text
                     all_incidents.extend(incidents)
+
+        all_incidents = self._dedup_incidents(all_incidents)
 
         if all_incidents:
 
@@ -303,6 +314,8 @@ class KnowledgeIngestionService:
                 incident.embedding = embedding
                 incident.created_at = now
                 incident.updated_at = now
+                incident.metadata.setdefault("source_file", loaded.filename)
+                incident.metadata.setdefault("document_id", document.id)
 
             # 批量入库（一次事务）
             await self.incident_repository.batch_create(all_incidents)
@@ -353,6 +366,28 @@ class KnowledgeIngestionService:
         except Exception:
             pass
 
+
+    @staticmethod
+    def _dedup_incidents(incidents):
+        """篇内知识级去重：按 title/summary/solution 指纹合并重复知识。"""
+        if not INCIDENT_DEDUP_ENABLED or not incidents:
+            return incidents
+        seen = set()
+        out = []
+        for inc in incidents:
+            key = _fingerprint(
+                "{}\n{}\n{}".format(
+                    inc.title or "",
+                    inc.summary or "",
+                    inc.solution or "",
+                )
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(inc)
+        return out
+
     async def ingest_text(
         self,
         kb_id: str,
@@ -380,9 +415,7 @@ class KnowledgeIngestionService:
         )
 
         # ── 去重（跨知识库）──
-        content_hash = hashlib.md5(
-            text.encode("utf-8")
-        ).hexdigest()
+        content_hash = _fingerprint(text)
 
         existing = await self.document_repository.get_by_hash(
             owner=owner,
@@ -431,77 +464,128 @@ class KnowledgeIngestionService:
             document
         )
 
-        MAX_TEXT_FOR_SINGLE_EXTRACT = 40000
-        parent_context = ""
-        if len(cleaned) <= MAX_TEXT_FOR_SINGLE_EXTRACT:
-            parent_context = cleaned
-            incidents = await self.extractor.extract(
-                kb_id=kb_id,
-                document_id=document.id,
-                text=cleaned,
-                owner=owner,
-            )
-            incidents = incidents if incidents else []
-        else:
-            chunks = self.splitter.split(
-                cleaned,
-                chunk_size=30000,
-            )
-            # 并行提取（信号量控制 LLM 并发）
-            async def _extract_one(text: str):
-                async with self._extract_sem:
-                    return await self.extractor.extract(
-                        kb_id=kb_id,
-                        document_id=document.id,
-                        text=text,
-                        owner=owner,
-                    )
-
-            tasks = [_extract_one(chunk.text) for chunk in chunks]
-            chunk_results = await asyncio.gather(*tasks)
-            incidents = []
-            for chunk, result in zip(chunks, chunk_results):
-                if result:
-                    for inc in result:
-                        inc.context_text = chunk.text
-                    incidents.extend(result)
-
-        if incidents:
-
-            texts = [
-                self.embedding_service.build_incident_text(
-                    title=i.title,
-                    summary=i.summary,
-                    symptom=i.symptom,
-                    root_cause=i.root_cause,
-                    solution=i.solution,
+        try:
+            MAX_TEXT_FOR_SINGLE_EXTRACT = 40000
+            parent_context = ""
+            if len(cleaned) <= MAX_TEXT_FOR_SINGLE_EXTRACT:
+                parent_context = cleaned
+                incidents = await self.extractor.extract(
+                    kb_id=kb_id,
+                    document_id=document.id,
+                    text=cleaned,
+                    owner=owner,
                 )
-                for i in incidents
-            ]
+                incidents = incidents if incidents else []
+            else:
+                chunks = self.splitter.split(
+                    cleaned,
+                    chunk_size=30000,
+                )
+                # 并行提取（信号量控制 LLM 并发）
+                async def _extract_one(text: str):
+                    async with self._extract_sem:
+                        # 块级失败重试一次；仍失败则跳过该块，不影响整篇入库
+                        for attempt in range(2):
+                            try:
+                                return await self.extractor.extract(
+                                    kb_id=kb_id,
+                                    document_id=document.id,
+                                    text=text,
+                                    owner=owner,
+                                )
+                            except Exception:
+                                if attempt == 1:
+                                    return []
 
-            embeddings = await self.embedding_service.batch_embed(
-                texts
+                tasks = [_extract_one(chunk.text) for chunk in chunks]
+                chunk_results = await asyncio.gather(*tasks, return_exceptions=True)
+                incidents = []
+                for chunk, result in zip(chunks, chunk_results):
+                    if isinstance(result, Exception):
+                        continue
+                    if result:
+                        for inc in result:
+                            inc.context_text = chunk.text
+                        incidents.extend(result)
+
+            incidents = self._dedup_incidents(incidents)
+
+            if incidents:
+
+                texts = [
+                    self.embedding_service.build_incident_text(
+                        title=i.title,
+                        summary=i.summary,
+                        symptom=i.symptom,
+                        root_cause=i.root_cause,
+                        solution=i.solution,
+                    )
+                    for i in incidents
+                ]
+
+                embeddings = await self.embedding_service.batch_embed(
+                    texts
+                )
+
+                for incident, embedding in zip(
+                    incidents,
+                    embeddings,
+                ):
+                    incident.owner = owner
+                    if not incident.context_text and parent_context:
+                        incident.context_text = parent_context
+                    incident.embedding = embedding
+                    incident.created_at = now
+                    incident.updated_at = now
+                    incident.metadata.setdefault("source_file", filename)
+                    incident.metadata.setdefault("document_id", document.id)
+
+                # 批量入库
+                await self.incident_repository.batch_create(incidents)
+
+            await self.document_repository.update_status(
+
+                document.id,
+
+                DocumentStatus.COMPLETED,
             )
 
-            for incident, embedding in zip(
-                incidents,
-                embeddings,
-            ):
-                incident.owner = owner
-                if not incident.context_text and parent_context:
-                    incident.context_text = parent_context
-                incident.embedding = embedding
-                incident.created_at = now
-                incident.updated_at = now
+            return incidents
+        except Exception:
+            # 失败时把文档标记为 FAILED，避免停留 PROCESSING 造成假去重/僵尸行
+            try:
+                await self.document_repository.update_status(
+                    document.id,
+                    DocumentStatus.FAILED,
+                )
+            except Exception:
+                pass
+            raise
 
-            # 批量入库
-            await self.incident_repository.batch_create(incidents)
-
-        await self.document_repository.update_status(
-
-            document.id,
-
-            DocumentStatus.COMPLETED,
+    async def cleanup_stale_documents(
+        self,
+        older_than_hours: int = 24,
+        owner: str | None = None,
+        limit: int = 200,
+    ) -> int:
+        """惰性清理：删除长期未完成的残留文档及其 incidents（避免僵尸行/假去重）。"""
+        stale = await self.document_repository.list_stale_noncompleted(
+            older_than_hours=older_than_hours,
+            owner=owner,
+            limit=limit,
         )
+        cleaned = 0
+        for doc in stale:
+            try:
+                await self.incident_repository.delete_by_document(doc.id)
+                await self.document_repository.delete(doc.id)
+                cleaned += 1
+            except Exception as e:
+                print(
+                    f"[cleanup] 清理文档 {doc.id} 失败: "
+                    f"{type(e).__name__}: {e}"
+                )
+        if cleaned:
+            print(f"[cleanup] 惰性清理完成，删除 {cleaned} 条残留文档")
+        return cleaned
 
-        return incidents

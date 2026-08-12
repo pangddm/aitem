@@ -14,6 +14,38 @@ from app.knowledge.models import (
 )
 
 
+import json
+
+
+def _as_dict(value):
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _as_list(value):
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, list) else []
+        except Exception:
+            return []
+    return []
+
+
+from app.core.retry import db_retry, retry_db
 class IncidentRepository:
 
     # stdout/stderr 最大存储长度（超过截断）
@@ -81,11 +113,11 @@ class IncidentRepository:
 
             solution=row["solution"],
 
-            keywords=row["keywords"] or [],
+            keywords=_as_list(row["keywords"]),
 
-            environment=row["environment"] or {},
+            environment=_as_dict(row["environment"]),
 
-            metadata=row["metadata"] or {},
+            metadata=_as_dict(row["metadata"]),
 
             embedding=row["embedding"],
 
@@ -165,6 +197,7 @@ class IncidentRepository:
     # Create
     # ==========================================================
 
+    @db_retry
     async def create(
         self,
         incident: Incident,
@@ -341,127 +374,130 @@ class IncidentRepository:
         self,
         incidents: list[Incident],
     ) -> None:
+        async def _op():
 
-        if not incidents:
-            return
+            if not incidents:
+                return
 
-        async with self.pool.acquire() as conn:
-            async with conn.transaction():
-                await conn.executemany(
-                    """
-                    INSERT INTO incident (
-
-                        id,
-
-                        owner,
-
-                        kb_id,
-
-                        document_id,
-
-                        source,
-
-                        category,
-
-                        context_text,
-
-                        title,
-
-                        summary,
-
-                        symptom,
-
-                        root_cause,
-
-                        solution,
-
-                        keywords,
-
-                        environment,
-
-                        metadata,
-
-                        embedding,
-
-                        created_at,
-
-                        updated_at
-
-                    )
-
-                    VALUES(
-
-                        $1,$2,$3,$4,$5,
-
-                        $6,$7,$8,$9,$10,
-
-                        $11,$12,$13,$14,$15,
-
-                        $16,$17,$18
-
-                    )
-                    """,
-                    [
-                        (
-                            UUID(inc.id),
-                            UUID(inc.owner),
-                            UUID(inc.kb_id),
-                            UUID(inc.document_id) if inc.document_id else None,
-                            inc.source.value,
-                            inc.category.value,
-                            inc.context_text,
-                            inc.title,
-                            inc.summary,
-                            inc.symptom,
-                            inc.root_cause,
-                            inc.solution,
-                            inc.keywords,
-                            json.dumps(inc.environment),
-                            json.dumps(inc.metadata),
-                            inc.embedding,
-                            inc.created_at,
-                            inc.updated_at,
-                        )
-                        for inc in incidents
-                    ],
-                )
-
-                # Batch insert commands
-                cmd_params = []
-                for inc in incidents:
-                    for step, cmd in enumerate(inc.commands, start=1):
-                        cmd_params.append((
-                            uuid4(),
-                            UUID(inc.id),
-                            step,
-                            cmd.command,
-                            self._truncate_output(cmd.stdout),
-                            self._truncate_output(cmd.stderr),
-                            cmd.exit_code,
-                        ))
-
-                if cmd_params:
+            async with self.pool.acquire() as conn:
+                async with conn.transaction():
                     await conn.executemany(
                         """
-                        INSERT INTO incident_command(
+                        INSERT INTO incident (
+
                             id,
-                            incident_id,
-                            step,
-                            command,
-                            stdout,
-                            stderr,
-                            exit_code
+
+                            owner,
+
+                            kb_id,
+
+                            document_id,
+
+                            source,
+
+                            category,
+
+                            context_text,
+
+                            title,
+
+                            summary,
+
+                            symptom,
+
+                            root_cause,
+
+                            solution,
+
+                            keywords,
+
+                            environment,
+
+                            metadata,
+
+                            embedding,
+
+                            created_at,
+
+                            updated_at
+
                         )
+
                         VALUES(
-                            $1,$2,$3,$4,$5,$6,$7
+
+                            $1,$2,$3,$4,$5,
+
+                            $6,$7,$8,$9,$10,
+
+                            $11,$12,$13,$14,$15,
+
+                            $16,$17,$18
+
                         )
                         """,
-                        cmd_params,
+                        [
+                            (
+                                UUID(inc.id),
+                                UUID(inc.owner),
+                                UUID(inc.kb_id),
+                                UUID(inc.document_id) if inc.document_id else None,
+                                inc.source.value,
+                                inc.category.value,
+                                inc.context_text,
+                                inc.title,
+                                inc.summary,
+                                inc.symptom,
+                                inc.root_cause,
+                                inc.solution,
+                                inc.keywords,
+                                json.dumps(inc.environment),
+                                json.dumps(inc.metadata),
+                                inc.embedding,
+                                inc.created_at,
+                                inc.updated_at,
+                            )
+                            for inc in incidents
+                        ],
                     )
+
+                    # Batch insert commands
+                    cmd_params = []
+                    for inc in incidents:
+                        for step, cmd in enumerate(inc.commands, start=1):
+                            cmd_params.append((
+                                uuid4(),
+                                UUID(inc.id),
+                                step,
+                                cmd.command,
+                                self._truncate_output(cmd.stdout),
+                                self._truncate_output(cmd.stderr),
+                                cmd.exit_code,
+                            ))
+
+                    if cmd_params:
+                        await conn.executemany(
+                            """
+                            INSERT INTO incident_command(
+                                id,
+                                incident_id,
+                                step,
+                                command,
+                                stdout,
+                                stderr,
+                                exit_code
+                            )
+                            VALUES(
+                                $1,$2,$3,$4,$5,$6,$7
+                            )
+                            """,
+                            cmd_params,
+                        )
+        await retry_db(_op)
     # ==========================================================
     # Get
     # ==========================================================
 
+    @db_retry
     async def get(
         self,
         incident_id: str,
@@ -493,6 +529,7 @@ class IncidentRepository:
     # List by KB
     # ==========================================================
 
+    @db_retry
     async def list_by_kb(
         self,
         kb_id: str,
@@ -543,6 +580,7 @@ class IncidentRepository:
     # List by Document
     # ==========================================================
 
+    @db_retry
     async def list_by_document(
         self,
         document_id: str,
@@ -576,6 +614,7 @@ class IncidentRepository:
     # Update
     # ==========================================================
 
+    @db_retry
     async def update(
         self,
         incident: Incident,
@@ -651,6 +690,7 @@ class IncidentRepository:
     # Delete
     # ==========================================================
 
+    @db_retry
     async def delete(
         self,
         incident_id: str,
@@ -666,6 +706,7 @@ class IncidentRepository:
                 UUID(incident_id),
             )
 
+    @db_retry
     async def delete_by_document(
         self,
         document_id: str,
@@ -685,6 +726,7 @@ class IncidentRepository:
     # Count by KB
     # ==========================================================
 
+    @db_retry
     async def count_by_kb(
         self,
         kb_id: str,
@@ -707,6 +749,7 @@ class IncidentRepository:
     # Vector Similarity Search
     # ==========================================================
 
+    @db_retry
     async def similarity_search(
         self,
         kb_id: str,
@@ -742,6 +785,7 @@ class IncidentRepository:
     # Keyword Search
     # ==========================================================
 
+    @db_retry
     async def keyword_search(
         self,
         kb_id: str,
@@ -804,6 +848,7 @@ class IncidentRepository:
     # Hybrid Search (Vector + Keyword)
     # ==========================================================
 
+    @db_retry
     async def hybrid_search(
         self,
         kb_id: str,

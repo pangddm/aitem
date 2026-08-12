@@ -115,11 +115,16 @@ Stderr:
 """
                 )
 
+            source_file = (incident.metadata or {}).get("source_file", "")
+            source_line = f"来源: {source_file}" if source_file else "来源: 未知"
+
             context.append(
                 f"""
 ==========================
 历史案例 {index}
 ==========================
+
+{source_line}
 
 分类: {incident.category.value}
 

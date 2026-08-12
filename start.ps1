@@ -68,12 +68,12 @@ if (-not $workers) {
         $workers = (Get-Content "$PSScriptRoot\.env" | Where-Object { $_ -match '^WEB_WORKERS=' }) -split '=',2 | Select-Object -Last 1
     } catch { $workers = $null }
 }
-if (-not $workers) { $workers = "4" }
+if (-not $workers) { $workers = "1" }
 
 Start-Process powershell -ArgumentList @(
     '-NoExit',
     '-Command',
-    "conda activate aitem; `$env:PYTHONUNBUFFERED='1'; python -u -m uvicorn main:app --workers $workers --host 0.0.0.0 --port 8000"
+    "conda activate aitem; `$env:PYTHONUNBUFFERED='1'; python -u -m uvicorn main:app --workers $workers --host 0.0.0.0 --port 8000  --reload"
 )
 
 Write-Host "[2/3] FastAPI process started."

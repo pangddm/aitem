@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Optional
+
+from app.core.config import CHUNK_SIZE, CHUNK_OVERLAP
 
 # 标题模式：Markdown #, 中文"第X章", 编号 1./1.1., 【标题】, 分隔线
 _HEADER_RE = re.compile(
@@ -14,12 +18,20 @@ _HEADER_RE = re.compile(
 )
 
 
+def _approx_tokens(text: str) -> int:
+    """粗略估算 token 数：中文/英文混排按 ~1.6 字符/token 估算。"""
+    if not text:
+        return 0
+    return max(1, int(math.ceil(len(text) / 1.6)))
+
+
 @dataclass
 class TextChunk:
     """文本分片 — 保持语义完整"""
 
     text: str
     index: int
+    token_estimate: int = 0
 
 
 class TextSplitter:
@@ -27,16 +39,22 @@ class TextSplitter:
     def split(
         self,
         text: str,
-        chunk_size: int = 30000,
+        chunk_size: int | None = None,
+        overlap: int | None = None,
     ) -> list[TextChunk]:
 
-        if len(text) <= chunk_size:
-            return [TextChunk(text=text, index=0)]
+        size = chunk_size or (CHUNK_SIZE or 30000)
+        olap = CHUNK_OVERLAP if overlap is None else overlap
+        if olap and olap >= size:
+            olap = max(0, size // 10)
+
+        if len(text) <= size:
+            return [TextChunk(text=text, index=0, token_estimate=_approx_tokens(text))]
 
         # 策略 1: 按章节/标题切
         sections = self._split_by_headers(text)
-        if len(sections) > 1 and self._any_in_limit(sections, chunk_size):
-            return self._merge_small(sections, chunk_size)
+        if len(sections) > 1 and self._any_in_limit(sections, size):
+            return self._merge_small(sections, size)
 
         # 策略 2: 按段落切
         paragraphs = [
@@ -45,10 +63,10 @@ class TextSplitter:
             if len(p.strip()) > 20
         ]
         if len(paragraphs) > 1:
-            return self._merge_small(paragraphs, chunk_size)
+            return self._merge_small(paragraphs, size)
 
-        # 策略 3: 字符切（在换行处对齐）
-        return self._split_by_char(text, chunk_size)
+        # 策略 3: 字符切（在换行处对齐），并带 overlap
+        return self._split_by_char(text, size, olap)
 
     # ────────── 分割 ────────────────────────────────────
 
@@ -69,22 +87,44 @@ class TextSplitter:
 
         return [p for p in parts if len(p) > 50]
 
-    @staticmethod
-    def _split_by_char(text: str, size: int) -> list[TextChunk]:
-        chunks = []
+    @classmethod
+    def _split_by_char(
+        cls,
+        text: str,
+        size: int,
+        overlap: int = 0,
+    ) -> list[TextChunk]:
+        chunks: list[TextChunk] = []
+        n = len(text)
         start = 0
         idx = 0
-        while start < len(text):
+        while start < n:
             end = start + size
-            if end < len(text):
+            if end < n:
                 br = text.rfind("\n", start, end)
                 if br > start + size // 2:
                     end = br + 1
-            chunks.append(
-                TextChunk(text=text[start:end].strip(), index=idx)
-            )
-            start = end
-            idx += 1
+            content = text[start:end].strip()
+            if content:
+                chunks.append(
+                    TextChunk(
+                        text=content,
+                        index=idx,
+                        token_estimate=_approx_tokens(content),
+                    )
+                )
+                idx += 1
+
+            if end >= n:
+                break
+
+            # overlap：下一块从 end-overlap 起，并对齐到换行，避免切词
+            nstart = end - overlap
+            if overlap > 0:
+                nxt = text.find("\n", nstart)
+                if nxt != -1 and nxt < end:
+                    nstart = nxt + 1
+            start = max(nstart, start + 1)  # 保证前进，防死循环
         return chunks
 
     # ────────── 合并 ────────────────────────────────────
@@ -109,9 +149,9 @@ class TextSplitter:
                 if buf and not is_header:
                     buf += "\n\n" + part
                 elif is_header and buf.strip():
-                    chunks.append(TextChunk(text=buf.strip(), index=idx))
+                    chunks.append(TextChunk(text=buf.strip(), index=idx, token_estimate=_approx_tokens(buf.strip())))
                     idx += 1
-                    chunks.append(TextChunk(text=part, index=idx))
+                    chunks.append(TextChunk(text=part, index=idx, token_estimate=_approx_tokens(part)))
                     idx += 1
                     buf = ""
                     continue
@@ -119,14 +159,14 @@ class TextSplitter:
                     buf = part
             else:
                 if buf.strip():
-                    chunks.append(TextChunk(text=buf.strip(), index=idx))
+                    chunks.append(TextChunk(text=buf.strip(), index=idx, token_estimate=_approx_tokens(buf.strip())))
                     idx += 1
                 buf = part
 
         if buf.strip():
-            chunks.append(TextChunk(text=buf.strip(), index=idx))
+            chunks.append(TextChunk(text=buf.strip(), index=idx, token_estimate=_approx_tokens(buf.strip())))
 
-        return chunks or [TextChunk(text="\n\n".join(parts), index=0)]
+        return chunks or [TextChunk(text="\n\n".join(parts), index=0, token_estimate=_approx_tokens("\n\n".join(parts)))]
 
     @staticmethod
     def _any_in_limit(parts: list[str], limit: int) -> bool:

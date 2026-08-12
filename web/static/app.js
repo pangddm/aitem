@@ -484,6 +484,7 @@ const App = {
     // 附件
     this.el.attachBtn.addEventListener("click", () => this.el.fileInput.click());
     this.el.netBtn.addEventListener("click", () => this.toggleWebSearch());
+    this.el.voiceBtn.addEventListener("click", () => this.toggleVoiceInput());
     this.el.fileInput.addEventListener("change", (e) => this.handleFile(e));
     this.el.fileTagRemove.addEventListener("click", () => this.clearFile());
 
@@ -1913,6 +1914,67 @@ const App = {
     this.showToast(this.webSearch ? "🌐 已开启联网搜索" : "已关闭联网搜索");
   },
 
+  toggleVoiceInput() {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) {
+      this.showToast(this.language === "en" ? "Voice input is not supported in this browser. Please use Chrome or Edge." : "当前浏览器不支持语音输入，请使用 Chrome/Edge");
+      return;
+    }
+    if (!this._recognition) {
+      const rec = new SR();
+      rec.lang = "zh-CN";
+      rec.interimResults = true;
+      rec.continuous = false;
+      rec.onresult = (e) => {
+        let text = "";
+        for (let i = 0; i < e.results.length; i++) {
+          text += e.results[i][0].transcript;
+        }
+        if (this.el.messageInput) {
+          this.el.messageInput.value = text;
+          this.autoResize(this.el.messageInput);
+        }
+      };
+      rec.onend = () => {
+        this._listening = false;
+        const btn = this.el.voiceBtn;
+        if (btn) {
+          btn.classList.remove("active");
+          btn.title = "语音输入";
+        }
+      };
+      rec.onerror = (e) => {
+        this._listening = false;
+        const b = this.el.voiceBtn;
+        if (b) { b.classList.remove("active"); b.title = "语音输入"; }
+        if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+          this.showToast(this.language === "en" ? "Microphone permission denied. Please allow it in the browser and retry." : "未获得麦克风权限，请在浏览器地址栏允许麦克风后重试");
+        } else {
+          this.showToast(this.language === "en" ? ("Voice error: " + e.error) : ("语音识别出错: " + e.error));
+        }
+      };
+      this._recognition = rec;
+    }
+    const rec = this._recognition;
+    const btn = this.el.voiceBtn;
+    if (this._listening) {
+      rec.stop();
+      return;
+    }
+    this._listening = true;
+    if (btn) {
+      btn.classList.add("active");
+      btn.title = "语音输入（正在聆听…）";
+    }
+    try {
+      rec.start();
+      this.showToast(this.language === "en" ? "🎤 Listening... speak now" : "🎤 正在聆听，请说话...");
+    } catch (err) {
+      this._listening = false;
+      if (btn) btn.classList.remove("active");
+      this.showToast(this.language === "en" ? "Voice start failed: " + err.message : "语音启动失败: " + err.message);
+    }
+  },
   stopStream() {
     if (this.state.abortCtrl) {
       this.state.abortCtrl.abort();

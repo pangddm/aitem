@@ -1,7 +1,13 @@
 import base64
 
 from openai import OpenAI
-from app.core.config import DASHSCOPE_API_KEY, VISION_MODEL, VISION_BASE_URL
+from app.core.config import (
+    DASHSCOPE_API_KEY,
+    VISION_MODEL,
+    VISION_FALLBACK_MODEL,
+    VISION_BASE_URL,
+)
+from app.core.retry import retry_sync
 
 
 vision_client = OpenAI(
@@ -38,6 +44,14 @@ def encode_image(
 
 
 
+
+
+def _vision_models():
+    """主模型 + 备用模型（去重），主模型失败时自动切换。"""
+    models = [VISION_MODEL]
+    if VISION_FALLBACK_MODEL and VISION_FALLBACK_MODEL != VISION_MODEL:
+        models.append(VISION_FALLBACK_MODEL)
+    return models
 
 
 def analyze_image(
@@ -83,48 +97,36 @@ def analyze_image(
     )
 
 
-    response = vision_client.chat.completions.create(
-
-        model=VISION_MODEL,
-
-
-        messages=[
-
-            {
-
-                "role":"user",
-
-                "content":[
-
-                    {
-
-                    "type":"text",
-
-                    "text":prompt
-
-                    },
-
-
-                    {
-
-                    "type":"image_url",
-
-                    "image_url":{
-
-                        "url":
-                        f"data:image/png;base64,{image_base64}"
-
-                    }
-
-                    }
-
-                ]
-
-            }
-
-        ]
-
-    )
-
-
-    return response.choices[0].message.content
+    last_exc = None
+    for model in _vision_models():
+        try:
+            response = retry_sync(
+                lambda: vision_client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": prompt},
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:image/png;base64,{image_base64}"
+                                    },
+                                },
+                            ],
+                        }
+                    ],
+                )
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            last_exc = e
+            print(
+                f"[Vision] 模型 {model} 调用失败: "
+                f"{type(e).__name__}: {e}"
+            )
+            continue
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("全部视觉模型调用失败")

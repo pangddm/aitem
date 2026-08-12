@@ -1,3 +1,4 @@
+"""DashScope 文本嵌入：429/5xx/网络错误自动重试（指数退避）。"""
 from httpx import AsyncClient, Timeout
 
 from app.core.config import (
@@ -6,6 +7,7 @@ from app.core.config import (
     DASHSCOPE_EMBEDDING_MODEL,
     EMBEDDING_DIM,
 )
+from app.core.retry import retry_async
 
 from .base import EmbeddingModel
 
@@ -23,18 +25,22 @@ class DashScopeEmbedding(EmbeddingModel):
             "Content-Type": "application/json",
         }
 
-    async def embed(self, text: str) -> list[float]:
-        payload = {
-            "model": DASHSCOPE_EMBEDDING_MODEL,
-            "input": text,
-            "dimensions": EMBEDDING_DIM,
-        }
+    async def _post(self, payload):
         resp = await self.client.post(
             DASHSCOPE_EMBEDDING_BASE_URL,
             headers=self.headers,
             json=payload,
         )
         resp.raise_for_status()
+        return resp
+
+    async def embed(self, text: str) -> list[float]:
+        payload = {
+            "model": DASHSCOPE_EMBEDDING_MODEL,
+            "input": text,
+            "dimensions": EMBEDDING_DIM,
+        }
+        resp = await retry_async(lambda: self._post(payload))
         return resp.json()["data"][0]["embedding"]
 
     async def batch_embed(self, texts: list[str]) -> list[list[float]]:
@@ -43,12 +49,7 @@ class DashScopeEmbedding(EmbeddingModel):
             "input": texts,
             "dimensions": EMBEDDING_DIM,
         }
-        resp = await self.client.post(
-            DASHSCOPE_EMBEDDING_BASE_URL,
-            headers=self.headers,
-            json=payload,
-        )
-        resp.raise_for_status()
+        resp = await retry_async(lambda: self._post(payload))
         return [item["embedding"] for item in resp.json()["data"]]
 
     async def close(self):

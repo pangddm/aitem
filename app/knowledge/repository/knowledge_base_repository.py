@@ -6,6 +6,7 @@ from uuid import UUID
 import asyncpg
 
 from app.knowledge.models import KnowledgeBase
+from app.core.retry import db_retry
 
 
 def _valid_uuid(value: str) -> UUID | None:
@@ -21,6 +22,7 @@ class KnowledgeBaseRepository:
     def __init__(self, pool: asyncpg.Pool):
         self.pool = pool
 
+    @db_retry
     async def create(
         self,
         kb: KnowledgeBase,
@@ -56,6 +58,7 @@ class KnowledgeBaseRepository:
                 kb.updated_at,
             )
 
+    @db_retry
     async def get(
         self,
         kb_id: str,
@@ -94,6 +97,7 @@ class KnowledgeBaseRepository:
             updated_at=row["updated_at"],
         )
 
+    @db_retry
     async def list_by_owner(
         self,
         owner: str,
@@ -119,6 +123,7 @@ class KnowledgeBaseRepository:
 
         return [self._to_kb(row) for row in rows]
 
+    @db_retry
     async def list_accessible(
         self,
         owner: str,
@@ -157,6 +162,7 @@ class KnowledgeBaseRepository:
 
         return [self._to_kb(row) for row in rows]
 
+    @db_retry
     async def list_public(
         self,
         page: int = 1,
@@ -186,6 +192,7 @@ class KnowledgeBaseRepository:
 
         return [self._to_kb(row) for row in rows], (total or 0)
 
+    @db_retry
     async def is_accessible(
         self,
         kb_id: str,
@@ -208,6 +215,7 @@ class KnowledgeBaseRepository:
             )
         return row is not None
 
+    @db_retry
     async def update(
         self,
         kb: KnowledgeBase,
@@ -231,6 +239,7 @@ class KnowledgeBaseRepository:
                 kb.updated_at or datetime.utcnow(),
             )
 
+    @db_retry
     async def delete(
         self,
         kb_id: str,
@@ -247,6 +256,7 @@ class KnowledgeBaseRepository:
                 kb_id,
             )
 
+    @db_retry
     async def search_by_name(
         self,
         owner: str,
@@ -275,6 +285,7 @@ class KnowledgeBaseRepository:
 
         return [self._to_kb(row) for row in rows]
 
+    @db_retry
     async def count_by_owner(
         self,
         owner: str,
